@@ -1,21 +1,36 @@
+# =========================
+# Python
+# =========================
 __pycache__/
 *.py[cod]
 *$py.class
+
+# =========================
+# Virtual environment
+# =========================
 .venv/
 venv/
-ENV/
+env/
 
+# =========================
+# Django
+# =========================
 db.sqlite3
 db.sqlite3-journal
-local_settings.py
-staticfiles/
 media/
+staticfiles/
+*.log
 
-vcs/.env
+# Local settings / secrets
+.env
+.env.*
+local_settings.py
 
+# =========================
+# OS / Editor junk
+# =========================
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
-.DS_Store
 *.swp
-
-*.log

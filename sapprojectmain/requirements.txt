@@ -1,0 +1,10 @@
+Django                   # core web framework
+django-cors-headers      # enables frontend (React/Vue) cross-origin requests
+djangorestframework      # REST API framework
+djangorestframework-simplejwt  # JWT auth (access + refresh tokens)
+python-dotenv         # loads environment variables from .env file
+psycopg2-binary       # PostgreSQL database connector
+django-filter         # filtering API queries (search, filter endpoints)
+dj-database-url # It was for parsing your Neon connection string in settings.py — instead of manually writing out each DB setting, it lets you just do:
+
+Pillow                  # image processing (only needed if you handle image uploads)
