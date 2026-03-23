@@ -36,7 +36,14 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
+
+    # Started apps
     "users",
+    "audit_log",
+    "document_permissions",
+    "documents",
+    "reviews",
+    "roles",
 ]
 
 MIDDLEWARE = [
