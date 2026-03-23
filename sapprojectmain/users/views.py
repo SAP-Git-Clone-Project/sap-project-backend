@@ -48,3 +48,5 @@ class LoginView(APIView):
 class HelloView(APIView):
     def get(self, request):
         return Response({"message": "API is working"})
+
+# GET, GET:id, POST, DELETE, PUT
