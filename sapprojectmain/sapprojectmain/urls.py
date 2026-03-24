@@ -25,8 +25,11 @@ urlpatterns = [
 
     # users app
     path("api/users/", include("users.urls")),
-    
+
     # JWT auth
     path("api/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+
+    # documents app
+    path("api/documents/", include("documents.urls")),
 ]
