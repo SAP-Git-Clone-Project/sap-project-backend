@@ -6,7 +6,6 @@ from django.contrib.auth.models import (
     BaseUserManager,
 )
 
-
 # USER MANAGER
 class UserManager(BaseUserManager):
     def create_user(self, username, email, password=None, **extra_fields):
@@ -35,6 +34,9 @@ class UserManager(BaseUserManager):
 # CUSTOM USER MODEL
 class UserModel(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    first_name = models.CharField(max_length=80, blank=False, null=False)
+    last_name = models.CharField(max_length=80, blank=False, null=False)
 
     username = models.CharField(max_length=150, unique=True, blank=False, null=False)
     email = models.EmailField(unique=True, blank=False, null=False)
