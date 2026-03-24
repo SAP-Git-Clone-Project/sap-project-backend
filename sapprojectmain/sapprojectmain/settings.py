@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "documents",
     "reviews",
     "roles",
+    "core"
 ]
 
 MIDDLEWARE = [

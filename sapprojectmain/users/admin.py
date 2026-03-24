@@ -8,6 +8,8 @@ class UserAdmin(admin.ModelAdmin):
     # fields to show
     list_display = (
         "id",
+        "first_name",
+        "last_name",
         "email",
         "username",
         "avatar",
@@ -35,7 +37,19 @@ class UserAdmin(admin.ModelAdmin):
 
     # admin show user table config
     fieldsets = (
-        ("Main Info", {"fields": ("email", "username", "password", "avatar")}),
+        (
+            "Main Info",
+            {
+                "fields": (
+                    "email",
+                    "first_name",
+                    "last_name",
+                    "username",
+                    "password",
+                    "avatar",
+                )
+            },
+        ),
         (
             "Permissions",
             {
