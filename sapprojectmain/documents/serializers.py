@@ -49,7 +49,7 @@ class CreateDocumentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         request = self.context["request"]
-
+        
         return DocumentModel.objects.create_document(
             created_by=request.user,
             **validated_data)
@@ -62,6 +62,6 @@ class UpdateDocumentSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         instance.title = validated_data.get("title", instance.title)
-        instance.save(updated_fields=["title", "updated_at"])
+        instance.save(update_fields=["title", "updated_at"])
         return instance
         

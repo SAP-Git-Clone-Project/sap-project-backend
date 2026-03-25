@@ -8,26 +8,26 @@ class DocumentQuerySet(models.QuerySet):
     def delete(self):
         return super().update(is_deleted=True)
 
-    def alive(self):
+    def active(self):
         return super().filter(is_deleted=False)
 
 # DOCUMENT MANAGER
 class DocumentManager(models.Manager):
-    def create_document(self, created_by_uuid, title, **extra_fields):
+    def create_document(self, created_by, title, **extra_fields):
         if not title:
             raise ValueError("Title is required")
         
         document = self.model(title=title, **extra_fields)
-        document.created_by = created_by_uuid
+        document.created_by = created_by
 
-        document.save(using=self.__db)
+        document.save(using=self._db)
         return document
 
     def get_queryset(self):
         return DocumentQuerySet(self.model, using=self._db)
     
     def get_queryset_without_deleted(self):
-        return self.get_queryset().alive()
+        return self.get_queryset().active()
 
 # DOCUMENT MODEL
 class DocumentModel(models.Model):
