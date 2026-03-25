@@ -106,3 +106,62 @@ class HasDocumentPermission(BasePermission):
         # NOTE: Default Read-Only
         return request.method in SAFE_METHODS
     
+# Check if current user has permission to read a document
+class HasDocumentReadPermission(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.user_roles.filter(role__role_name="administrator").exists():
+            return True
+
+        return obj.document_permissions.filter(
+            user_id = user,
+            document_id = obj,
+            permission_type__in=[
+                obj.document_permissions.model.PermissionType.READ,
+                obj.document_permissions.model.PermissionType.WRITE,
+                obj.document_permissions.model.PermissionType.APPROVE,
+                obj.document_permissions.model.PermissionType.DELETE
+            ]
+        ).exists();
+
+# Check if current user has permission to write a document
+class HasDocumentWritePermission(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.user_roles.filter(role__role_name="administrator").exists():
+            return True
+
+        user_permission = obj.document_permissions.filter(user_id=user).first()
+        if not user_permission:
+            return False
+
+        return obj.document_permissions.filter(
+            user_id = user,
+            document_id = obj,
+            permission_type = obj.document_permissions.model.PermissionType.WRITE
+        ).exists();
+
+# Check if current user has permission to delete a document
+class HasDocumentDeletePermission(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.user_roles.filter(role__role_name="administrator").exists():
+            return True
+
+        return obj.document_permissions.filter(
+            user_id = user,
+            document_id = obj,
+            permission_type = obj.document_permissions.model.PermissionType.DELETE
+        ).exists();

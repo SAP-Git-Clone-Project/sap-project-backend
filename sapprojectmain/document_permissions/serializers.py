@@ -4,20 +4,8 @@ from .models import DocumentPermissionModel
 from users.models import UserModel
 from documents.models import DocumentModel
 
-# GET DOCUMENT PERMISSION
-class GetDocumentPermissionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DocumentPermissionModel
-        fields = [
-            "id",
-            "user_id",
-            "document_id",
-            "permission_type",
-            "granted_at",
-        ]
-
-# CREATE DOCUMENT PERMISSION
-class CreateDocumentPermissionSerializer(serializers.ModelSerializer):
+# DOCUMENT PERMISSION SERIALIZER
+class DocumentPermissionSerializer(serializers.ModelSerializer):
     user_id = serializers.PrimaryKeyRelatedField(
         queryset=UserModel.objects.all()
     )
@@ -27,7 +15,14 @@ class CreateDocumentPermissionSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = DocumentPermissionModel
-        fields = ["user_id", "document_id", "permission_type"]
+        fields = [
+            "id",
+            "user_id",
+            "document_id",
+            "permission_type",
+            "granted_at",
+        ]
+        read_only_fields = ["id", "granted_at"]
 
     def validate(self, data):
         request         = self.context["request"]
@@ -54,4 +49,4 @@ class CreateDocumentPermissionSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context["request"]
         
-        return DocumentPermissionModel.objects.create_document_permission(**validated_data)
+        return DocumentPermissionModel.objects.create(**validated_data)

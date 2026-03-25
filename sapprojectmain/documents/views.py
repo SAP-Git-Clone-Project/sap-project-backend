@@ -3,14 +3,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
+from core.permissions import *
+
 from .models import DocumentModel
-from .serializers import CreateDocumentSerializer, GetDocumentSerializer, UpdateDocumentSerializer
+from .serializers import DocumentSerializer
 
 # CREATE
 class CreateDocumentView(generics.CreateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = CreateDocumentSerializer
-    permission_classes = [IsAuthenticated]
+    serializer_class = DocumentSerializer
+    permission_classes = [IsAuthenticated, CanCreateDocument]
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -28,8 +30,9 @@ class CreateDocumentView(generics.CreateAPIView):
 # GET
 class GetDocumentView(generics.RetrieveAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = GetDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
+    permission_classes = [HasDocumentReadPermission]
 
     def retrieve(self, request, *args, **kwargs):
         response = super().retrieve(request, *args, **kwargs)
@@ -41,8 +44,9 @@ class GetDocumentView(generics.RetrieveAPIView):
 # UPDATE
 class UpdateDocumentView(generics.UpdateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = UpdateDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
+    permission_classes = [HasDocumentWritePermission]
 
     def update(self, request, *args, **kwargs):
         response = super().update(request, *args, **kwargs)
@@ -54,16 +58,19 @@ class UpdateDocumentView(generics.UpdateAPIView):
 # DELETE
 class DeleteDocumentView(generics.DestroyAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = GetDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
-
+    permission_classes = [HasDocumentDeletePermission]
+    
     def destroy(self, request, *args, **kwargs):
         response = super().destroy(request, *args, **kwargs)
         return Response({"message": "Document deleted successfully"})
 
 # GET ALL DOCUMENTS
 class GetAllDocumentsView(APIView):
+    permission_classes = [HasDocumentPermission, HasDocumentReadPermission]
+    
     def get(self, request):
         documents = DocumentModel.objects.get_queryset_without_deleted()
-        serializer = GetDocumentSerializer(documents, many=True)
+        serializer = DocumentSerializer(documents, many=True)
         return Response(serializer.data, status=200)
