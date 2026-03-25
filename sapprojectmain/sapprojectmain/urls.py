@@ -30,4 +30,7 @@ urlpatterns = [
 
     # documents app
     path("api/documents/", include("documents.urls")),
+
+    # document permissions app
+    path("api/document_permissions/", include("document_permissions.urls")),
 ]
