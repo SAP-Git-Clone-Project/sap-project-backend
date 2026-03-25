@@ -12,7 +12,7 @@ class VersionStatus(models.TextChoices):
 class Versions(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     document = models.ForeignKey(
-        "documents.Documents", on_delete=models.CASCADE, related_name="versions"
+        "documents.DocumentModel", on_delete=models.CASCADE, related_name="versions"
     )
     version_number = models.IntegerField()
     content = models.TextField(blank=True, null=True)

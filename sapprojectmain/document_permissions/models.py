@@ -10,8 +10,8 @@ from documents.models import DocumentModel
 class DocumentPermissionModel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    user_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="document_permissions_user")
-    document_id = models.ForeignKey(DocumentModel, on_delete=models.CASCADE, related_name="document_permissions_document")
+    user_id = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="document_permissions")
+    document_id = models.ForeignKey(DocumentModel, on_delete=models.CASCADE, related_name="document_permissions")
 
     class PermissionType(models.TextChoices):
         READ    = "READ", _("READ")
