@@ -8,16 +8,20 @@ import re
 from .models import UserModel
 
 
-# ─── VALIDATORS ───────────────────────────────────────────────────────────────
-
+# VALIDATORS
 username_validator = RegexValidator(
     regex=r"^[A-Za-z][A-Za-z0-9_]*$",
     message="Username must start with a letter and contain only letters, numbers, or underscores",
 )
 
 
+# VALIDATE PASSWORD STRENGTH
 def validate_password_strength(value):
-    # Django built-in validators (length, common passwords, numeric-only)
+
+    if len(value) < 8:
+        raise serializers.ValidationError("Password must be at least 8 characters long")
+
+    # Django built-in validators
     try:
         validate_password(value)
     except ValidationError as e:
@@ -25,36 +29,47 @@ def validate_password_strength(value):
 
     # Custom rules
     if not re.search(r"[A-Z]", value):
-        raise serializers.ValidationError("Must include at least one uppercase letter")
+        raise serializers.ValidationError("Password must include at least one uppercase letter")
     if not re.search(r"[a-z]", value):
-        raise serializers.ValidationError("Must include at least one lowercase letter")
+        raise serializers.ValidationError("Password must include at least one lowercase letter")
     if not re.search(r"[0-9]", value):
-        raise serializers.ValidationError("Must include at least one number")
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", value):
-        raise serializers.ValidationError("Must include at least one special character")
+        raise serializers.ValidationError("Password must include at least one number")
+    if not re.search(r"[!+@#$%^&*(),.?\":{}|<>]", value):
+        raise serializers.ValidationError(
+            'Password must include at least one special character: ! + @ # $ % ^ & * ( ) , . ? " : { } | <>'
+        )
 
     return value
 
 
-# ─── REGISTER ─────────────────────────────────────────────────────────────────
-
-
+# REGISTER
 class RegisterSerializer(serializers.ModelSerializer):
+
     password = serializers.CharField(
         write_only=True,
         min_length=8,
         validators=[validate_password_strength],
     )
+
     username = serializers.CharField(
         min_length=3,
-        max_length=30,
+        max_length=50,
         validators=[username_validator],
     )
 
     class Meta:
         model = UserModel
-        fields = ["id", "username", "first_name", "last_name", "email", "password"]
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "password",
+        ]
+        read_only_fields = ["id"]
 
+    # EMAIL validation
     def validate_email(self, value):
         try:
             validate_email(value)
@@ -66,20 +81,25 @@ class RegisterSerializer(serializers.ModelSerializer):
 
         return value.lower()
 
+    # USERNAME validation
     def validate_username(self, value):
+        value = value.lower()
+
         if UserModel.objects.filter(username=value).exists():
             raise serializers.ValidationError("Username already in use")
+
         return value
 
+    # CREATE USER
     def create(self, validated_data):
         password = validated_data.pop("password")
+
         user = UserModel.objects.create_user(password=password, **validated_data)
+
         return user
 
 
-# ─── LOGIN ────────────────────────────────────────────────────────────────────
-
-
+# LOGIN
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
@@ -100,9 +120,7 @@ class LoginSerializer(serializers.Serializer):
         return data
 
 
-# ─── USER ─────────────────────────────────────────────────────────────────────
-
-
+# USER
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(
         write_only=True,
@@ -142,7 +160,8 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Invalid email format")
 
         qs = UserModel.objects.filter(email=value.lower())
-        # Exclude current instance on update so user can keep their own email
+
+        # NOTE: Exclude current instance on update so user can keep their own email
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
@@ -152,7 +171,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_username(self, value):
         qs = UserModel.objects.filter(username=value)
-        # Exclude current instance on update so user can keep their own username
+
+        # NOTE: Exclude current instance on update so user can keep their own username
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():

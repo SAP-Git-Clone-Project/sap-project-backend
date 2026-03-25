@@ -6,6 +6,9 @@ from django.contrib.auth.models import (
     BaseUserManager,
 )
 
+from roles.models import RolesModel
+from roles.models import UserRolesModel
+
 # USER MANAGER
 class UserManager(BaseUserManager):
     def create_user(self, username, email, password=None, **extra_fields):
@@ -33,15 +36,18 @@ class UserManager(BaseUserManager):
 
 # CUSTOM USER MODEL
 class UserModel(AbstractBaseUser, PermissionsMixin):
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    first_name = models.CharField(max_length=80, blank=False, null=False)
-    last_name = models.CharField(max_length=80, blank=False, null=False)
+    first_name = models.CharField(max_length=50, blank=False, null=False)
 
-    username = models.CharField(max_length=150, unique=True, blank=False, null=False)
+    last_name = models.CharField(max_length=50, blank=False, null=False)
+
+    username = models.CharField(max_length=50, unique=True, blank=False, null=False)
+
     email = models.EmailField(unique=True, blank=False, null=False)
 
-    password = models.CharField(max_length=255, blank=False, null=False)
+    # password = models.CharField(max_length=255, blank=False, null=False)
 
     avatar = models.TextField(
         blank=True,
@@ -50,10 +56,12 @@ class UserModel(AbstractBaseUser, PermissionsMixin):
     )
 
     is_enabled = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
+
     is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = UserManager()
@@ -61,8 +69,17 @@ class UserModel(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
 
+    roles = models.ManyToManyField(
+        RolesModel,
+        through=UserRolesModel,
+        through_fields=("user", "role"),
+        related_name="users",
+        blank=True,
+    )
+
     class Meta:
         db_table = "users"
+        ordering = ["-created_at"]
         constraints = [
             models.UniqueConstraint(fields=["email"], name="unique_email"),
             models.UniqueConstraint(fields=["username"], name="unique_username"),

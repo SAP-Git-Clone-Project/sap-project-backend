@@ -1,8 +1,9 @@
 from pathlib import Path
 import os
-from dotenv import load_dotenv
 import dj_database_url
 from datetime import timedelta
+import cloudinary
+from dotenv import load_dotenv
 
 # Load data from ENV
 load_dotenv()
@@ -16,7 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-39=9o6m1@r9g!fyae7e+9ufvds0m$464w9_99j&7m$vd!0*uoe"
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -35,16 +36,17 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
-
     # Started apps
     "users",
     "audit_log",
     "document_permissions",
     "documents",
     "reviews",
+    "versions",
     "roles",
-    "core"
+    "core",
 ]
 
 MIDDLEWARE = [
@@ -69,7 +71,15 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.AllowAny",),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "20/min",
+        "user": "100/min",
+    },
 }
 
 # JWT
@@ -77,6 +87,8 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=3),
     "AUTH_HEADER_TYPES": ("Bearer",),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
 }
 
 ROOT_URLCONF = "sapprojectmain.urls"
@@ -106,6 +118,12 @@ DATABASES = {
         os.getenv("DATABASE_URL"), conn_max_age=600, ssl_require=True
     )
 }
+
+# You can hardcode it for testing, or use os.environ.get('CLOUDINARY_URL')
+cloudinary.config(
+    cloudinary_url="cloudinary://237824979836918:98evy7q7E2R_3eZ77v5aEzlJKi8@df1dqsckt",
+    secure=True,
+)
 
 
 # Password validation

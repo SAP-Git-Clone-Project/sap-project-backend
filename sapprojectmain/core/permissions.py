@@ -105,3 +105,4 @@ class HasDocumentPermission(BasePermission):
 
         # NOTE: Default Read-Only
         return request.method in SAFE_METHODS
+    
