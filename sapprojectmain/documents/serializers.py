@@ -7,8 +7,8 @@ def validate_title(self, value):
         raise serializers.ValidationError("Title cannot be empty")
     return value
 
-# GET DOCUMENT
-class GetDocumentSerializer(serializers.ModelSerializer):
+# DOCUMENT SERIALIEZR
+class DocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentModel
         fields = [
@@ -18,13 +18,7 @@ class GetDocumentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = fields
-
-# CREATE DOCUMENT
-class CreateDocumentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DocumentModel
-        fields = ["title"]
+        read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
     def validate(self, data):
         request = self.context["request"]
@@ -54,14 +48,7 @@ class CreateDocumentSerializer(serializers.ModelSerializer):
             created_by=request.user,
             **validated_data)
 
-# UPDATE DOCUMENT
-class UpdateDocumentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = DocumentModel
-        fields = ["title"]
-
     def update(self, instance, validated_data):
         instance.title = validated_data.get("title", instance.title)
         instance.save(update_fields=["title", "updated_at"])
         return instance
-        

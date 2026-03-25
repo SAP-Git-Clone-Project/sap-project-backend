@@ -51,7 +51,6 @@ class DocumentModel(models.Model):
                 condition=Q(is_deleted=False),
                 name="unique_user_title")
         ]
-    
         
     def __str__(self):
         return self.title
