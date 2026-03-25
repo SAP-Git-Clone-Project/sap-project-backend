@@ -73,7 +73,7 @@ class CanCreateDocument(BasePermission):
     def has_permission(self, request, view):
         if not (request.user and request.user.is_authenticated):
             return False
-        allowed = ["administrator", "author", "reviewer"]
+        allowed = ["administrator", "author"]
         return request.user.user_roles.filter(role__role_name__in=allowed).exists()
 
 
