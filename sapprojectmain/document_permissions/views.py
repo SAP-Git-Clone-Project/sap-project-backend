@@ -4,12 +4,12 @@ from rest_framework.views import APIView
 
 from .models import DocumentPermissionModel
 
-from .serializers import CreateDocumentPermissionSerializer, GetDocumentPermissionSerializer
+from .serializers import DocumentPermissionSerializer
 
 # CREATE
 class CreateDocumentPermissionView(generics.CreateAPIView):
-    queryset = DocumentPermissionModel.objects.get_queryset()
-    serializer_class = CreateDocumentPermissionSerializer
+    queryset = DocumentPermissionModel.objects.all()
+    serializer_class = DocumentPermissionSerializer
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -26,8 +26,8 @@ class CreateDocumentPermissionView(generics.CreateAPIView):
 
 # GET
 class GetDocumentPermissionView(generics.RetrieveAPIView):
-    queryset = DocumentPermissionModel.objects.get_queryset()
-    serializer_class = GetDocumentPermissionSerializer
+    queryset = DocumentPermissionModel.objects.all()
+    serializer_class = DocumentPermissionSerializer
     lookup_field = "id"
 
     def retrieve(self, request, *args, **kwargs):
@@ -40,7 +40,7 @@ class GetDocumentPermissionView(generics.RetrieveAPIView):
 # DELETE
 class DeleteDocumentPermissionView(generics.DestroyAPIView):
     queryset = DocumentPermissionModel.objects.get_queryset()
-    serializer_class = GetDocumentPermissionSerializer
+    serializer_class = DocumentPermissionSerializer
     lookup_field = "id"
 
     def destroy(self, request, *args, **kwargs):
@@ -51,5 +51,5 @@ class DeleteDocumentPermissionView(generics.DestroyAPIView):
 class GetAllDocumentPermissionsView(APIView):
     def get(self, request):
         document_permissions = DocumentPermissionModel.objects.all()
-        serializer = GetDocumentPermissionSerializer(document_permissions, many=True)
+        serializer = DocumentPermissionSerializer(document_permissions, many=True)
         return Response(serializer.data, status=200)

@@ -4,12 +4,12 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
 from .models import DocumentModel
-from .serializers import CreateDocumentSerializer, GetDocumentSerializer, UpdateDocumentSerializer
+from .serializers import DocumentSerializer
 
 # CREATE
 class CreateDocumentView(generics.CreateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = CreateDocumentSerializer
+    serializer_class = DocumentSerializer
     permission_classes = [IsAuthenticated]
     
     def create(self, request, *args, **kwargs):
@@ -28,7 +28,7 @@ class CreateDocumentView(generics.CreateAPIView):
 # GET
 class GetDocumentView(generics.RetrieveAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = GetDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
 
     def retrieve(self, request, *args, **kwargs):
@@ -41,7 +41,7 @@ class GetDocumentView(generics.RetrieveAPIView):
 # UPDATE
 class UpdateDocumentView(generics.UpdateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = UpdateDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
 
     def update(self, request, *args, **kwargs):
@@ -54,7 +54,7 @@ class UpdateDocumentView(generics.UpdateAPIView):
 # DELETE
 class DeleteDocumentView(generics.DestroyAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
-    serializer_class = GetDocumentSerializer
+    serializer_class = DocumentSerializer
     lookup_field = "id"
 
     def destroy(self, request, *args, **kwargs):
@@ -65,5 +65,5 @@ class DeleteDocumentView(generics.DestroyAPIView):
 class GetAllDocumentsView(APIView):
     def get(self, request):
         documents = DocumentModel.objects.get_queryset_without_deleted()
-        serializer = GetDocumentSerializer(documents, many=True)
+        serializer = DocumentSerializer(documents, many=True)
         return Response(serializer.data, status=200)

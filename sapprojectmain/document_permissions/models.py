@@ -6,15 +6,6 @@ from django.utils.translation import gettext_lazy as _
 
 from documents.models import DocumentModel
 
-# DOCUMENT PERMISSIONS MANAGER
-class DocumentPermissionManager(models.Manager):
-    def create_document_permission(self, **extra_fields):
-        # TODO: Check if permission_type is allowed for the role the user has
-
-        document_permission = self.model(**extra_fields)
-        document_permission.save(using=self._db)
-        return document_permission
-
 # DOCUMENT PERMISSION MODEL
 class DocumentPermissionModel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -31,8 +22,6 @@ class DocumentPermissionModel(models.Model):
     permission_type = models.CharField(max_length=16, choices=PermissionType.choices, default=PermissionType.READ)
 
     granted_at = models.DateTimeField(auto_now_add=True)
-
-    objects = DocumentPermissionManager()
     
     class Meta:
         db_table = "document_permissions"
