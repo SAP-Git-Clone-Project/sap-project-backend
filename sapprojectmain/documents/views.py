@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
+from core.permissions import *
+
 from .models import DocumentModel
 from .serializers import DocumentSerializer
 
@@ -10,7 +12,7 @@ from .serializers import DocumentSerializer
 class CreateDocumentView(generics.CreateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
     serializer_class = DocumentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CanCreateDocument]
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -30,6 +32,7 @@ class GetDocumentView(generics.RetrieveAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
     serializer_class = DocumentSerializer
     lookup_field = "id"
+    permission_classes = [HasDocumentReadPermission]
 
     def retrieve(self, request, *args, **kwargs):
         response = super().retrieve(request, *args, **kwargs)
@@ -43,6 +46,7 @@ class UpdateDocumentView(generics.UpdateAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
     serializer_class = DocumentSerializer
     lookup_field = "id"
+    permission_classes = [HasDocumentWritePermission]
 
     def update(self, request, *args, **kwargs):
         response = super().update(request, *args, **kwargs)
@@ -56,13 +60,16 @@ class DeleteDocumentView(generics.DestroyAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
     serializer_class = DocumentSerializer
     lookup_field = "id"
-
+    permission_classes = [HasDocumentDeletePermission]
+    
     def destroy(self, request, *args, **kwargs):
         response = super().destroy(request, *args, **kwargs)
         return Response({"message": "Document deleted successfully"})
 
 # GET ALL DOCUMENTS
 class GetAllDocumentsView(APIView):
+    permission_classes = [HasDocumentPermission, HasDocumentReadPermission]
+    
     def get(self, request):
         documents = DocumentModel.objects.get_queryset_without_deleted()
         serializer = DocumentSerializer(documents, many=True)
