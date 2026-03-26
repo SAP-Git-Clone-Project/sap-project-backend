@@ -107,3 +107,16 @@ class VersionDetailView(APIView):
             return Response({"error": "Cannot delete active version."}, status=400)
         version.delete()
         return Response(status=204)
+
+class VersionDiffView(APIView):
+    permission_classes = [HasDocumentPermission]
+
+    def get(self, request, pk):
+        version = get_object_or_404(Versions, pk=pk)
+        self.check_object_permissions(request, version.document)
+
+        parent = version.parent_version
+        return Response({
+            "new_version": VersionSerializer(version).data,
+            "old_version": VersionSerializer(parent).data if parent else None,
+        })

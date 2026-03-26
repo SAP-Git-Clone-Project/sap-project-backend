@@ -32,7 +32,6 @@ class GetDocumentView(generics.RetrieveAPIView):
     queryset = DocumentModel.objects.get_queryset_without_deleted()
     serializer_class = DocumentSerializer
     lookup_field = "id"
-    permission_classes = [HasDocumentReadPermission]
 
     def retrieve(self, request, *args, **kwargs):
         response = super().retrieve(request, *args, **kwargs)
