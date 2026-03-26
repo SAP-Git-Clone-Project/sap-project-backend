@@ -43,8 +43,15 @@ class UserRoleAssignmentView(APIView):
 class UserRoleDetailView(APIView):
     permission_classes = [IsSystemAdmin]
 
+    def get(self, request, id):
+        # Retrieve a specific role assignment
+        assignment = get_object_or_404(UserRolesModel, pk=id)
+        serializer = UserRoleSerializer(assignment)
+        return Response(serializer.data)
+
     def delete(self, request, id):
         # Remove a specific role assignment (Revoke permission)
         assignment = get_object_or_404(UserRolesModel, pk=id)
         assignment.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+    

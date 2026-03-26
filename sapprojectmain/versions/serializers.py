@@ -3,9 +3,11 @@ from .models import Versions
 
 
 class VersionSerializer(serializers.ModelSerializer):
+    old_version_content = serializers.SerializerMethodField()
+
     class Meta:
         model = Versions
-        fields = "__all__"
+        fields = ["__all__", "old_version_content"]
         read_only_fields = [
             "id",
             "version_number",

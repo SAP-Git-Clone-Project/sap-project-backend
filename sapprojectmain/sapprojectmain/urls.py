@@ -33,4 +33,10 @@ urlpatterns = [
 
     # document permissions app
     path("api/document_permissions/", include("document_permissions.urls")),
+
+    # roles app
+    path("api/roles/", include("roles.urls")),
+
+    # reviews app
+    path("api/reviews/", include("reviews.urls")),
 ]

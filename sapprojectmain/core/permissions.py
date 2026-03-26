@@ -76,6 +76,14 @@ class CanCreateDocument(BasePermission):
         allowed = ["administrator", "author"]
         return request.user.user_roles.filter(role__role_name__in=allowed).exists()
 
+class IsReviewerForDocument(BasePermission):
+    """
+    Permission to only allow the assigned reviewer to access or update a review.
+    """
+
+    def has_object_permission(self, request, view, obj):
+        # obj here is expected to be a Reviews instance
+        return obj.reviewer is not None and obj.reviewer == request.user
 
 # NOTE: Checks the specific document-level permission table
 class HasDocumentPermission(BasePermission):
@@ -126,7 +134,7 @@ class HasDocumentReadPermission(BasePermission):
                 obj.document_permissions.model.PermissionType.APPROVE,
                 obj.document_permissions.model.PermissionType.DELETE
             ]
-        ).exists();
+        ).exists()
 
 # Check if current user has permission to write a document
 class HasDocumentWritePermission(BasePermission):
@@ -147,7 +155,7 @@ class HasDocumentWritePermission(BasePermission):
             user_id = user,
             document_id = obj,
             permission_type = obj.document_permissions.model.PermissionType.WRITE
-        ).exists();
+        ).exists()
 
 # Check if current user has permission to delete a document
 class HasDocumentDeletePermission(BasePermission):
@@ -164,4 +172,4 @@ class HasDocumentDeletePermission(BasePermission):
             user_id = user,
             document_id = obj,
             permission_type = obj.document_permissions.model.PermissionType.DELETE
-        ).exists();
+        ).exists()

@@ -25,6 +25,9 @@ class DocumentSerializer(serializers.ModelSerializer):
         user = request.user
         title = data.get("title")
 
+        if not title:
+            raise serializers.ValidationError({"title": "Title cannot be empty"})
+
         queryset = DocumentModel.objects.filter(
             created_by=user,
             title=title,
@@ -34,10 +37,10 @@ class DocumentSerializer(serializers.ModelSerializer):
         if self.instance:
             queryset = queryset.exclude(id=self.instance.id)
             
-            if queryset.exists():
-                raise serializers.ValidationError(
-                    {"title": "You already have a document with this title"}
-                )
+        if queryset.exists():
+            raise serializers.ValidationError(
+                {"title": "You already have a document with this title"}
+            )
 
         return data
 
