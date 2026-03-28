@@ -52,6 +52,3 @@ class DocumentPermissionModel(models.Model):
 
     def __str__(self):
         return f"{self.user.username} -> {self.document.title} ({self.permission_type})"
-
-
-# NOTE: Ensure the migration includes the unique constraint to maintain data integrity
