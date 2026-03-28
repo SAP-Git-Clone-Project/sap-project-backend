@@ -1,175 +1,176 @@
 from rest_framework.permissions import BasePermission, IsAuthenticated, SAFE_METHODS
+from document_permissions.models import DocumentPermissionModel
+
+# --- SYSTEM PERMISSIONS (User Management) ---
 
 
-# Staff or Superuser only
-class IsStaffOrSuperUser(BasePermission):
+class IsSuperUser(BasePermission):
+    """
+    The Global God Mode. Can manage Users AND Documents.
+    """
+
     def has_permission(self, request, view):
-        return (
+        return bool(
+            request.user and request.user.is_authenticated and request.user.is_superuser
+        )
+
+
+class IsStaffUser(BasePermission):
+    """
+    The User Manager. Can CRUD users but NOT documents.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and request.user.is_staff
+        )
+
+
+class IsStaffOrSuperUser(BasePermission):
+    """
+    Used for User List and User Toggle views.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
             request.user
             and request.user.is_authenticated
             and (request.user.is_staff or request.user.is_superuser)
         )
 
 
-# Superuser only
-class IsSuperUser(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            request.user and request.user.is_authenticated and request.user.is_superuser
-        )
-
-
-# Staff only
-class IsStaffUser(BasePermission):
-    def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_staff
-
-
-# Authenticated only
 class IsAuthenticatedUser(IsAuthenticated):
-    pass
+    """
+    Extends standard authentication to also check if the
+    user account is currently 'Enabled' in the system.
+    """
 
-
-# Read-only for everyone, write only for authenticated users
-class ReadOnlyOrAuthenticatedWrite(BasePermission):
     def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user and request.user.is_authenticated
-
-
-# Owner only (object-level)
-class IsOwner(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        return obj == request.user
-
-
-# Owner or staff/superuser
-class IsOwnerOrStaff(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        return obj == request.user or request.user.is_staff or request.user.is_superuser
-
-
-# Read-only for unauthenticated, full access for staff
-class StaffFullAccessElseReadOnly(BasePermission):
-    def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-
-        return request.user and request.user.is_authenticated and request.user.is_staff
-
-# NOTE: Checks if user has the global Administrator role.
-class IsSystemAdmin(BasePermission):
-    def has_permission(self, request, view):
-        return (
-            request.user
-            and request.user.is_authenticated
-            and request.user.user_roles.filter(role__role_name="administrator").exists()
-        )
-
-
-# NOTE: Checks if global role is Author, Reviewer, or Admin
-class CanCreateDocument(BasePermission):
-    def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated):
+        # 1. First, check if they are logged in at all (The Default Check)
+        is_authenticated = super().has_permission(request, view)
+        if not is_authenticated:
             return False
-        allowed = ["administrator", "author"]
-        return request.user.user_roles.filter(role__role_name__in=allowed).exists()
 
-class IsReviewerForDocument(BasePermission):
-    """
-    Permission to only allow the assigned reviewer to access or update a review.
-    """
+        # 2. Second, check if the account is actually Active/Enabled
+        # This links directly to your ToggleUserView (Ban/Unban logic)
+        return getattr(request.user, "is_active", True)
 
-    def has_object_permission(self, request, view, obj):
-        # obj here is expected to be a Reviews instance
-        return obj.reviewer is not None and obj.reviewer == request.user
 
-# NOTE: Checks the specific document-level permission table
+# --- DOCUMENT PERMISSIONS (Document-Level Management) ---
+
+
 class HasDocumentPermission(BasePermission):
+    """
+    General document access.
+    Bypasses for Superusers.
+    Staff (Admins) are BLOCKED unless they are explicitly added to the document.
+    """
 
     def has_object_permission(self, request, view, obj):
         user = request.user
-        if not user.is_authenticated:
+        if not user or not user.is_authenticated:
             return False
 
-        # IMP: Admin Bypass
-        if user.user_roles.filter(role__role_name="administrator").exists():
+        # 1. Superuser Bypass
+        if user.is_superuser:
             return True
 
-        # IMP: Check the specific document permission link
+        # 2. Check Document Permissions Table
+        # Note: Staff are treated as regular users here.
         user_perm = obj.document_permissions.filter(user=user).first()
+        if not user_perm:
+            return False
 
-        if user_perm:
-            # NOTE: Owners/Contributors can do anything
-            if user_perm.permission_type in ["owner", "contributor"]:
-                return True
-            # NOTE: Reviewers can view or use the 'approve' action
-            if user_perm.permission_type == "reviewer":
-                return (
-                    request.method in SAFE_METHODS
-                    or getattr(view, "action", None) == "approve"
-                )
+        # If they are the Owner (WRITE or DELETE perms usually)
+        if user_perm.permission_type in ["WRITE", "DELETE"]:
+            return True
 
-        # NOTE: Default Read-Only
+        # If they are just a reader/reviewer
         return request.method in SAFE_METHODS
-    
-# Check if current user has permission to read a document
+
+
 class HasDocumentReadPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
-
         if not user or not user.is_authenticated:
             return False
 
-        if user.user_roles.filter(role__role_name="administrator").exists():
+        if user.is_superuser:
             return True
 
-        return obj.document_permissions.filter(
-            user_id = user,
-            document_id = obj,
-            permission_type__in=[
-                obj.document_permissions.model.PermissionType.READ,
-                obj.document_permissions.model.PermissionType.WRITE,
-                obj.document_permissions.model.PermissionType.APPROVE,
-                obj.document_permissions.model.PermissionType.DELETE
-            ]
-        ).exists()
+        # Any valid entry in the permission table allows reading
+        return obj.document_permissions.filter(user=user).exists()
 
-# Check if current user has permission to write a document
+
 class HasDocumentWritePermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
-
         if not user or not user.is_authenticated:
             return False
 
-        if user.user_roles.filter(role__role_name="administrator").exists():
+        if user.is_superuser:
             return True
 
-        user_permission = obj.document_permissions.filter(user_id=user).first()
-        if not user_permission:
-            return False
-
         return obj.document_permissions.filter(
-            user_id = user,
-            document_id = obj,
-            permission_type = obj.document_permissions.model.PermissionType.WRITE
+            user=user, permission_type="WRITE"
         ).exists()
 
-# Check if current user has permission to delete a document
+
+class HasDocumentApprovePermission(BasePermission):
+    """
+    Specific check for the 'APPROVE' action on a version/document.
+    """
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.is_superuser:
+            return True
+
+        return obj.document_permissions.filter(
+            user=user, permission_type="APPROVE"
+        ).exists()
+
+
 class HasDocumentDeletePermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
-
         if not user or not user.is_authenticated:
             return False
 
-        if user.user_roles.filter(role__role_name="administrator").exists():
+        if user.is_superuser:
             return True
 
+        # Only the creator/assigned deleter can do this.
         return obj.document_permissions.filter(
-            user_id = user,
-            document_id = obj,
-            permission_type = obj.document_permissions.model.PermissionType.DELETE
+            user=user, permission_type="DELETE"
+        ).exists()
+
+
+class IsReviewerForDocument(BasePermission):
+    """
+    Permission to allow only users with 'APPROVE' access to
+    see or finalize a review.
+    """
+
+    def has_permission(self, request, view):
+
+        if not IsAuthenticatedUser().has_permission(request, view):
+            return False
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        # obj here is a ReviewModel instance
+        user = request.user
+
+        # Staff/Superusers can review anything
+        if user.is_staff or user.is_superuser:
+            return True
+
+        # Check if a permission record exists for this User + this Document
+        # with the specific type 'APPROVE'
+        return DocumentPermissionModel.objects.filter(
+            document=obj.version.document, user=user, permission_type="APPROVE"
         ).exists()
