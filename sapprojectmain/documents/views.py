@@ -41,7 +41,7 @@ class DocumentDetailView(APIView):
         # NOTE: GET details of a specific active document
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=404)
+            return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
         serializer = DocumentSerializer(document)
         return Response(serializer.data)
 
@@ -49,7 +49,9 @@ class DocumentDetailView(APIView):
         # NOTE: Updates document title or content
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=404)
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         # NOTE: Partial update allows changing specific fields like title
         serializer = DocumentSerializer(
@@ -58,16 +60,20 @@ class DocumentDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, id):
         # NOTE: Triggers model level soft-delete logic
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=404)
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         document.delete()
-        return Response({"detail": "Document deleted successfully"}, status=200)
+        return Response(
+            {"detail": "Document deleted successfully"}, status=status.HTTP_200_OK
+        )
 
 
 # --- COLLECTION & SHARING VIEWS ---
@@ -99,7 +105,7 @@ class DocumentListCreateView(APIView):
         if serializer.is_valid():
             document = serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ShareDocumentView(APIView):
@@ -118,4 +124,4 @@ class ShareDocumentView(APIView):
             document = DocumentModel.objects.active_documents().get(pk=id)
             serializer.save(document=document)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=400)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

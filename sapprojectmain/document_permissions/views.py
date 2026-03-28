@@ -139,10 +139,10 @@ class RejectDocumentPermissionView(APIView):
 
         if not permission:
             return Response(
-                {"detail": "You do not have permissions for this document"}, status=404
+                {"detail": "You do not have permissions for this document"}, status=status.HTTP_404_NOT_FOUND
             )
 
         permission.delete()
         return Response(
-            {"detail": "You have successfully resigned from this document"}, status=204
+            {"detail": "You have successfully resigned from this document"}, status=status.HTTP_204_NO_CONTENT
         )
