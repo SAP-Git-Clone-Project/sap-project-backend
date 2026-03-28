@@ -27,22 +27,21 @@ class NotificationListView(generics.ListAPIView):
 
 
 class MarkNotificationReadView(generics.UpdateAPIView):
-    queryset = NotificationModel.objects.all()
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
     lookup_field = "pk"
 
+    def get_queryset(self):
+        # HACKER PROTECTION: A user can only "see" their own notifications.
+        # If they try to access someone else's ID, they get a 404 (Not Found)
+        # instead of a 403 (Forbidden), which is more secure.
+        return NotificationModel.objects.filter(recipient=self.request.user)
+
     def patch(self, request, *args, **kwargs):
-        # NOTE: PATCH to mark a single notification as read by UUID
         notification = self.get_object()
-
-        # SECURITY: Prevents users from marking others' notifications as read
-        if notification.recipient != request.user:
-            return Response(status=status.HTTP_403_FORBIDDEN)
-
         notification.is_read = True
         notification.save()
-        return Response({"status": "read"})
+        return Response({"status": "read"}, status=status.HTTP_200_OK)
 
 
 class MarkAllReadView(APIView):
