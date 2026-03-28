@@ -7,5 +7,7 @@ psycopg2-binary       # PostgreSQL database connector
 django-filter         # filtering API queries (search, filter endpoints)
 dj-database-url # It was for parsing your Neon connection string in settings.py
 cloudinary # clodinary
+requests # testing
+reportlab # exporting to pdf
 
 Pillow                  # image processing (only needed if you handle image uploads)
