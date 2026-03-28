@@ -3,11 +3,10 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.utils import timezone
 
-from .models import Reviews, ReviewStatus
+# Model/Serializer Imports
+from .models import ReviewModel, ReviewStatus
 from .serializers import ReviewSerializer
-from versions.models import Versions
 from core.permissions import IsReviewerForDocument
 
 
@@ -15,58 +14,62 @@ class ReviewDetailView(APIView):
     permission_classes = [IsReviewerForDocument]
 
     def get(self, request, pk):
-        """Fetch side-by-side data for the GitHub-style diff view."""
-        review = get_object_or_404(Reviews, pk=pk)
+        # NOTE: GET review data including old and new versions for diffing
+        review = get_object_or_404(ReviewModel, pk=pk)
+
+        # SECURITY: Verifies user has specific approval rights for this document
         self.check_object_permissions(request, review)
-        return Response(ReviewSerializer(review).data)
+
+        serializer = ReviewSerializer(review)
+        return Response(serializer.data)
 
     def patch(self, request, pk):
-        """Processes approval/rejection with pre-engineered safety logic."""
+        # NOTE: PATCH to finalize the review decision as approved or rejected
 
-        # Use select_for_update to lock the row during the transaction
-        review = get_object_or_404(Reviews.objects.select_for_update(), pk=pk)
-        self.check_object_permissions(request, review)
-
-        new_status = request.data.get("review_status")
-        comments = request.data.get("comments")
-
-        if review.review_status != ReviewStatus.PENDING:
-            return Response({"error": "Review already finalized."}, status=400)
-
+        # IMP: Atomic transaction with row locking to prevent concurrent updates
         with transaction.atomic():
-            # 1. Update Review Metadata
-            review.review_status = new_status
-            review.comments = comments
-            review.reviewed_at = timezone.now()
-            review.reviewer = request.user
-            review.save()
+            review = get_object_or_404(ReviewModel.objects.select_for_update(), pk=pk)
 
-            version = review.version
+            self.check_object_permissions(request, review)
 
-            if new_status == ReviewStatus.APPROVED:
-                # 2. Pre-engineered: Auto-increment version number
-                last_v = (
-                    Versions.objects.filter(
-                        document=version.document, status="approved"
-                    )
-                    .order_by("-version_number")
-                    .first()
-                )
-                version.version_number = (last_v.version_number + 1) if last_v else 1
-
-                # 3. Pre-engineered: Force only ONE active version
-                Versions.objects.filter(document=version.document).update(
-                    is_active=False
+            # NOTE: Prevents modification of reviews that are no longer pending
+            if review.review_status != ReviewStatus.PENDING:
+                return Response(
+                    {"error": "This review has already been finalized."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
-                # 4. Finalize new version
-                version.status = "approved"
-                version.is_active = True
-                version.save()
+            # NOTE: Serializer handles the status sync and version activation logic
+            serializer = ReviewSerializer(
+                review, data=request.data, partial=True, context={"request": request}
+            )
 
-            elif new_status == ReviewStatus.REJECTED:
-                version.status = "rejected"
-                version.is_active = False
-                version.save()
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
 
-        return Response(ReviewSerializer(review).data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ReviewListView(APIView):
+    permission_classes = [IsReviewerForDocument]
+
+    def get(self, request):
+        # NOTE: GET list of pending reviews for the reviewer inbox
+        user = request.user
+
+        # NOTE: Superusers see all reviews while others see only assigned docs
+        if user.is_staff or user.is_superuser:
+            reviews = ReviewModel.objects.all()
+        else:
+            # SECURITY: Filter by explicit APPROVE permission type in the pivot table
+            reviews = ReviewModel.objects.filter(
+                version__document__document_permissions__user=user,
+                version__document__document_permissions__permission_type="APPROVE",
+            ).distinct()
+
+        # NOTE: Filters for pending status to keep the list actionable
+        reviews = reviews.filter(review_status=ReviewStatus.PENDING)
+
+        serializer = ReviewSerializer(reviews, many=True)
+        return Response(serializer.data)
