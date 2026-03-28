@@ -1,26 +1,87 @@
 from rest_framework import serializers
-from .models import Versions
+from .models import VersionsModel, VersionStatus
 
 
 class VersionSerializer(serializers.ModelSerializer):
-    old_version_content = serializers.SerializerMethodField()
+    # NOTE: UI helpers to display human-readable names and version relationships
+    creator_name = serializers.ReadOnlyField(source="created_by.username")
+    parent_version_number = serializers.ReadOnlyField(
+        source="parent_version.version_number"
+    )
+
+    # NOTE: Provides owner ID to allow frontend to construct storage URLs
+    document_owner_id = serializers.ReadOnlyField(source="document.created_by.id")
 
     class Meta:
-        model = Versions
-        fields = ["__all__", "old_version_content"]
+        model = VersionsModel
+        fields = [
+            "id",
+            "document",
+            "created_by",
+            "creator_name",
+            "version_number",
+            "content",
+            "status",
+            "parent_version",
+            "parent_version_number",
+            "created_at",
+            "is_active",
+            "file_path",
+            "file_size",
+            "checksum",
+            "document_owner_id",
+        ]
+        # SECURITY: System-critical fields are protected from direct user modification
         read_only_fields = [
             "id",
             "version_number",
+            "created_by",
+            "created_at",
             "file_path",
             "file_size",
             "checksum",
             "is_active",
         ]
 
+    def validate(self, data):
+        # NOTE: Validates that only approved content can be set as the active version
+        status = data.get("status")
+        # NOTE: Handles cases where is_active is checked during partial updates
+        is_active = data.get("is_active", getattr(self.instance, "is_active", False))
+
+        if is_active and status != VersionStatus.APPROVED:
+            raise serializers.ValidationError(
+                {"is_active": "Only approved versions can be set as active"}
+            )
+
+        return data
+
     def create(self, validated_data):
-        doc = validated_data["document"]
-        last_v = (
-            Versions.objects.filter(document=doc).order_by("-version_number").first()
-        )
-        validated_data["version_number"] = (last_v.version_number + 1) if last_v else 1
+        # NOTE: Automatically branches from the current active version if no parent is specified
+        request = self.context.get("request")
+        document = validated_data.get("document")
+
+        # NOTE: Automatically assigns the logged-in user as the version creator
+        validated_data["created_by"] = request.user
+
+        # NOTE: Logic to identify the most relevant parent version for the new branch
+        if not validated_data.get("parent_version"):
+            # NOTE: Prefers branching from the active version or defaults to latest
+            parent = (
+                VersionsModel.objects.filter(document=document, is_active=True).first()
+                or VersionsModel.objects.filter(document=document)
+                .order_by("-version_number")
+                .first()
+            )
+            validated_data["parent_version"] = parent
+
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # NOTE: Automatically activates a version when its status changes to approved
+        new_status = validated_data.get("status", instance.status)
+
+        if new_status == VersionStatus.APPROVED:
+            validated_data["is_active"] = True
+
+        return super().update(instance, validated_data)

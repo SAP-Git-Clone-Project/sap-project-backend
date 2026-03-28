@@ -1,19 +1,30 @@
 from django.contrib import admin
-from .models import Versions
+from .models import VersionsModel
 
 
-@admin.register(Versions)
+@admin.register(VersionsModel)
 class VersionsAdmin(admin.ModelAdmin):
-    # What columns to show in the list
-    list_display = ("version_number", "document", "status", "is_active", "created_at")
+    # NOTE: Table columns for tracking document version history and authorship
+    list_display = (
+        "version_number",
+        "get_document_title",
+        "created_by",
+        "status",
+        "is_active",
+        "created_at",
+    )
 
-    # What to filter by on the right sidebar
+    # NOTE: Sidebar filters for active status and approval states
     list_filter = ("status", "is_active", "created_at")
 
-    # Allow searching by Document ID or Content
-    search_fields = ("document__id", "content", "checksum")
+    # NOTE: Search targets document titles, user emails, or file checksums
+    # IMP: Content search included for deep text retrieval
+    search_fields = ("document__title", "created_by__email", "checksum", "content")
 
-    # Make these fields read-only so you don't accidentally break the file links
+    # NOTE: ID lookups for related fields to prevent slow dropdowns on large datasets
+    raw_id_fields = ("document", "parent_version", "created_by")
+
+    # SECURITY: Read-only fields to protect file integrity and metadata history
     readonly_fields = (
         "id",
         "version_number",
@@ -23,9 +34,24 @@ class VersionsAdmin(admin.ModelAdmin):
         "created_at",
     )
 
-    # Organize the form
+    # NOTE: Helper method to display the document title in the list view
+    def get_document_title(self, obj):
+        return obj.document.title
+
+    get_document_title.short_description = "Document"
+
+    # NOTE: Logical grouping of version fields for better admin usability
     fieldsets = (
-        ("Identity", {"fields": ("id", "document", "parent_version")}),
-        ("Status", {"fields": ("version_number", "status", "is_active")}),
-        ("File Data", {"fields": ("file_path", "file_size", "checksum", "content")}),
+        (
+            "Identity & Parentage",
+            {"fields": ("id", "document", "parent_version", "created_by")},
+        ),
+        ("Versioning Logic", {"fields": ("version_number", "status", "is_active")}),
+        (
+            "Storage Details",
+            {"fields": ("file_path", "file_size", "checksum", "content")},
+        ),
+        ("Timestamps", {"fields": ("created_at",)}),
     )
+
+    ordering = ("-created_at",)
