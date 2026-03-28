@@ -119,6 +119,9 @@ def log_permission_change(sender, instance, created, **kwargs):
 @receiver(post_save, sender=VersionsModel)
 def log_version_activity(sender, instance, created, **kwargs):
     if created:
+        if not instance.created_by:
+            return
+
         # IMP: Tracking the upload of new physical files/content iterations
         AuditLogModel.objects.create(
             user=instance.created_by,
