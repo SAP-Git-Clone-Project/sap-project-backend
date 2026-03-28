@@ -146,6 +146,9 @@ def log_review_activity(sender, instance, created, **kwargs):
         action = "reject version"
     else:
         return
+    
+    if not instance.reviewer:
+        return
 
     # IMP: Documenting the formal approval/rejection workflow for audit compliance
     AuditLogModel.objects.create(
