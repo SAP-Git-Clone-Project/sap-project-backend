@@ -1,55 +1,148 @@
-from rest_framework import generics, status
+from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.permissions import (
+    HasDocumentWritePermission,
+    HasDocumentDeletePermission,
+    IsStaffOrSuperUser,
+    IsAuthenticatedUser,
+)
 from .models import DocumentPermissionModel
-
 from .serializers import DocumentPermissionSerializer
 
-# CREATE
+# --- MANAGEMENT ACTIONS ---
+
+
 class CreateDocumentPermissionView(generics.CreateAPIView):
+    # Grant or update document access
+    # Frontend sends User UUID from UserSearchView
     queryset = DocumentPermissionModel.objects.all()
     serializer_class = DocumentPermissionSerializer
+    # Only users with WRITE/DELETE roles can share access
+    permission_classes = [IsAuthenticatedUser, HasDocumentWritePermission]
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
+        serializer = self.get_serializer(
+            data=request.data, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         document_permission = serializer.save()
 
         return Response(
             {
                 "document_permission": serializer.data,
-                "uuid": document_permission.id
+                "uuid": document_permission.id,
+                "status": (
+                    "updated" if not document_permission._state.adding else "created"
+                ),
             },
-            status = status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
 
-# GET
-class GetDocumentPermissionView(generics.RetrieveAPIView):
+
+class DeleteDocumentPermissionView(generics.DestroyAPIView):
+    # Revoke access for a specific user
+    # Target row using its specific permission UUID
     queryset = DocumentPermissionModel.objects.all()
     serializer_class = DocumentPermissionSerializer
     lookup_field = "id"
-
-    def retrieve(self, request, *args, **kwargs):
-        response = super().retrieve(request, *args, **kwargs)
-        response.data = {
-            "document_permission": response.data
-        }
-        return response
-
-# DELETE
-class DeleteDocumentPermissionView(generics.DestroyAPIView):
-    queryset = DocumentPermissionModel.objects.get_queryset()
-    serializer_class = DocumentPermissionSerializer
-    lookup_field = "id"
+    # Requires DELETE level permission or Staff status
+    permission_classes = [
+        IsAuthenticatedUser,
+        HasDocumentDeletePermission | IsStaffOrSuperUser,
+    ]
 
     def destroy(self, request, *args, **kwargs):
-        response = super().destroy(request, *args, **kwargs)
-        return Response({"message": "Document permission deleted successfully"})
+        instance = self.get_object()
 
-# GET ALL DOCUMENT PERMISSIONS
+        # Primary creator cannot be revoked unless by Superuser
+        if instance.permission_type == "DELETE":
+            if (
+                instance.document.created_by == instance.user
+                and not request.user.is_superuser
+            ):
+                return Response(
+                    {"detail": "Cannot revoke the primary owner's permissions"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        instance.delete()
+        return Response(
+            {"detail": "Permission revoked successfully"}, status=status.HTTP_200_OK
+        )
+
+
+# --- VIEWING ACTIONS ---
+
+
+class GetDocumentMembersView(generics.ListAPIView):
+    # List all users invited to one specific document
+    # URL uses doc_id to filter the document_id column
+    serializer_class = DocumentPermissionSerializer
+    permission_classes = [IsAuthenticatedUser]
+
+    def get_queryset(self):
+        # Map URL variable doc_id to model field document_id
+        doc_id = self.kwargs.get("doc_id")
+        return DocumentPermissionModel.objects.filter(document_id=doc_id)
+
+
 class GetAllDocumentPermissionsView(APIView):
+    # Global permission list for dashboards
+    # Staff see everything while users see docs they can manage
+    permission_classes = [IsAuthenticatedUser]
+
     def get(self, request):
-        document_permissions = DocumentPermissionModel.objects.all()
-        serializer = DocumentPermissionSerializer(document_permissions, many=True)
-        return Response(serializer.data, status=200)
+        user = request.user
+        if user.is_staff or user.is_superuser:
+            permissions = DocumentPermissionModel.objects.all()
+        else:
+            # Filter for docs where user has management rights
+            permissions = DocumentPermissionModel.objects.filter(
+                document__document_permissions__user=user,
+                document__document_permissions__permission_type__in=["WRITE", "DELETE"],
+            ).distinct()
+
+        serializer = DocumentPermissionSerializer(permissions, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class GetDocumentPermissionView(generics.RetrieveAPIView):
+    # Fetch details for a single member record
+    # Target row using its specific permission UUID
+    queryset = DocumentPermissionModel.objects.all()
+    serializer_class = DocumentPermissionSerializer
+    lookup_field = "id"
+    permission_classes = [IsAuthenticatedUser]
+
+    def get_queryset(self):
+        user = self.request.user
+        # Users see records for documents they are part of
+        if user.is_staff or user.is_superuser:
+            return DocumentPermissionModel.objects.all()
+        return DocumentPermissionModel.objects.filter(
+            document__document_permissions__user=user
+        ).distinct()
+
+
+class RejectDocumentPermissionView(APIView):
+    # User voluntarily leaves a document
+    # Uses doc_id from URL to find the specific link
+    permission_classes = [IsAuthenticatedUser]
+
+    def delete(self, request, doc_id):
+        # Locate the link for the current logged in user
+        permission = DocumentPermissionModel.objects.filter(
+            user=request.user, document_id=doc_id
+        ).first()
+
+        if not permission:
+            return Response(
+                {"detail": "You do not have permissions for this document"}, status=404
+            )
+
+        permission.delete()
+        return Response(
+            {"detail": "You have successfully resigned from this document"}, status=204
+        )

@@ -1,52 +1,52 @@
 from rest_framework import serializers
-
+from django.contrib.auth import get_user_model
 from .models import DocumentPermissionModel
-from users.models import UserModel
-from documents.models import DocumentModel
 
-# DOCUMENT PERMISSION SERIALIZER
+User = get_user_model()
+
+
+# SERIALIZER FOR DOCUMENT ACCESS PERMISSIONS
 class DocumentPermissionSerializer(serializers.ModelSerializer):
-    user_id = serializers.PrimaryKeyRelatedField(
-        queryset=UserModel.objects.all()
+    # NOTE: Using explicit querysets for robust relation handling
+    user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+
+    # IMP: Dynamic model retrieval to prevent circular import issues with the Document app
+    document = serializers.PrimaryKeyRelatedField(
+        queryset=DocumentPermissionModel._meta.get_field(
+            "document"
+        ).remote_field.model.objects.all()
     )
-    document_id = serializers.PrimaryKeyRelatedField(
-        queryset=DocumentModel.objects.all()
-    )
-    
+
+    # NOTE: Read-only fields to provide context in the API response
+    username = serializers.ReadOnlyField(source="user.username")
+    document_title = serializers.ReadOnlyField(source="document.title")
+
     class Meta:
         model = DocumentPermissionModel
         fields = [
             "id",
-            "user_id",
-            "document_id",
+            "user",
+            "username",
+            "document",
+            "document_title",
             "permission_type",
             "granted_at",
         ]
+        # SECURITY: System-generated fields are locked from external modification
         read_only_fields = ["id", "granted_at"]
 
-    def validate(self, data):
-        request         = self.context["request"]
-        user_id         = data.get("user_id")
-        document_id     = data.get("document_id")
-        permission_type = data.get("permission_type")
+    def create(self, validated_data):
+        # NOTE: Extraction of core relation data from the validated payload
+        user = validated_data.pop("user")
+        document = validated_data.pop("document")
+        permission_type = validated_data.get("permission_type")
 
-        queryset = DocumentPermissionModel.objects.filter(
-            user_id=user_id,
-            document_id=document_id,
-            permission_type=permission_type
+        # IMP: Logic performs an upsert to prevent duplicates and allow role upgrades
+        instance, created = DocumentPermissionModel.objects.update_or_create(
+            user=user, document=document, defaults={"permission_type": permission_type}
         )
 
-        if self.instance:
-            queryset = queryset.exclude(id=self.instance.id)
+        return instance
 
-            if queryset.exists():
-                raise serializers.ValidationError(
-                    {"title": "This user already has the permission for the document"}
-                )
 
-        return data
-
-    def create(self, validated_data):
-        request = self.context["request"]
-        
-        return DocumentPermissionModel.objects.create(**validated_data)
+# NOTE: Ensure the unique constraint in Meta matches this update_or_create logic
