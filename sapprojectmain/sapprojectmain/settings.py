@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import sys
 import dj_database_url
 from datetime import timedelta
 import cloudinary
@@ -45,7 +46,7 @@ INSTALLED_APPS = [
     "documents",
     "reviews",
     "versions",
-    "roles",
+    "notifications.apps.NotificationsConfig",
     "core",
 ]
 
@@ -58,6 +59,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    'audit_log.middleware.AuditIPMiddleware',
 ]
 
 # CORS origin
@@ -118,6 +120,16 @@ DATABASES = {
         os.getenv("DATABASE_URL"), conn_max_age=600, ssl_require=True
     )
 }
+
+# IMP: TEST OVERRIDE (IMPORTANT)
+
+if "test" in sys.argv:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
 
 # You can hardcode it for testing, or use os.environ.get('CLOUDINARY_URL')
 cloudinary.config(
