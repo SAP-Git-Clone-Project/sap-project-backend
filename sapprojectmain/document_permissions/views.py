@@ -1,6 +1,7 @@
 from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.exceptions import PermissionDenied
 
 from core.permissions import (
     HasDocumentWritePermission,
@@ -20,7 +21,7 @@ class CreateDocumentPermissionView(generics.CreateAPIView):
     queryset = DocumentPermissionModel.objects.all()
     serializer_class = DocumentPermissionSerializer
     # Only users with WRITE/DELETE roles can share access
-    permission_classes = [IsAuthenticatedUser, HasDocumentWritePermission]
+    permission_classes = [IsAuthenticatedUser, HasDocumentDeletePermission]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(
@@ -33,9 +34,7 @@ class CreateDocumentPermissionView(generics.CreateAPIView):
             {
                 "document_permission": serializer.data,
                 "uuid": document_permission.id,
-                "status": (
-                    "updated" if not document_permission._state.adding else "created"
-                ),
+                "status": "created" if document_permission._was_created else "updated",
             },
             status=status.HTTP_201_CREATED,
         )
@@ -85,6 +84,15 @@ class GetDocumentMembersView(generics.ListAPIView):
     def get_queryset(self):
         # Map URL variable doc_id to model field document_id
         doc_id = self.kwargs.get("doc_id")
+        user = self.request.user
+
+        if not user.is_staff and not user.is_superuser:
+            is_member = DocumentPermissionModel.objects.filter(
+                user=user, document_id=doc_id
+            ).exists()
+            if not is_member:
+                raise PermissionDenied()
+
         return DocumentPermissionModel.objects.filter(document_id=doc_id)
 
 
@@ -141,8 +149,18 @@ class RejectDocumentPermissionView(APIView):
             return Response(
                 {"detail": "You do not have permissions for this document"}, status=status.HTTP_404_NOT_FOUND
             )
+        
+        if (
+            permission.permission_type == "DELETE"
+            and permission.document.created_by == request.user
+            and not request.user.is_superuser
+        ):
+            return Response(
+                {"detail": "The primary owner cannot resign from the document"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         permission.delete()
         return Response(
-            {"detail": "You have successfully resigned from this document"}, status=status.HTTP_204_NO_CONTENT
+            {"detail": "You have successfully resigned from this document"}, status=status.HTTP_200_OK
         )

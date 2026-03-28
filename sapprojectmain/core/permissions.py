@@ -129,6 +129,40 @@ class HasDocumentApprovePermission(BasePermission):
 
 
 class HasDocumentDeletePermission(BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        if user.is_superuser:
+            return True
+
+        # Grant endpoint — document comes from request body
+        doc_id = request.data.get("document")
+
+        # Revoke endpoint — document must be resolved via the permission UUID in the URL
+        if not doc_id:
+            permission_id = request.parser_context.get("kwargs", {}).get("id")
+            if permission_id:
+                perm = DocumentPermissionModel.objects.filter(
+                    id=permission_id
+                ).select_related("document").first()
+                if perm:
+                    doc_id = perm.document_id
+
+        # Resign endpoint — doc_id is directly in the URL
+        if not doc_id:
+            doc_id = request.parser_context.get("kwargs", {}).get("doc_id")
+
+        if not doc_id:
+            return False
+
+        return DocumentPermissionModel.objects.filter(
+            user=user,
+            document_id=doc_id,
+            permission_type="DELETE",
+        ).exists()
+
     def has_object_permission(self, request, view, obj):
         user = request.user
         if not user or not user.is_authenticated:
@@ -137,8 +171,7 @@ class HasDocumentDeletePermission(BasePermission):
         if user.is_superuser:
             return True
 
-        # Only the creator/assigned deleter can do this.
-        return obj.document_permissions.filter(
+        return obj.document.document_permissions.filter(
             user=user, permission_type="DELETE"
         ).exists()
 
@@ -150,7 +183,6 @@ class IsReviewerForDocument(BasePermission):
     """
 
     def has_permission(self, request, view):
-
         if not IsAuthenticatedUser().has_permission(request, view):
             return False
         return True
@@ -162,6 +194,9 @@ class IsReviewerForDocument(BasePermission):
         # Staff/Superusers can review anything
         if user.is_staff or user.is_superuser:
             return True
+
+        if obj.version.document.is_deleted:
+            return False
 
         # Check if a permission record exists for this User + this Document
         # with the specific type 'APPROVE'
