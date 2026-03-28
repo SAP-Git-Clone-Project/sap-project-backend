@@ -55,21 +55,19 @@ class ReviewListView(APIView):
     permission_classes = [IsReviewerForDocument]
 
     def get(self, request):
-        # NOTE: GET list of pending reviews for the reviewer inbox
         user = request.user
 
-        # NOTE: Superusers see all reviews while others see only assigned docs
         if user.is_staff or user.is_superuser:
             reviews = ReviewModel.objects.all()
         else:
-            # SECURITY: Filter by explicit APPROVE permission type in the pivot table
             reviews = ReviewModel.objects.filter(
                 version__document__document_permissions__user=user,
                 version__document__document_permissions__permission_type="APPROVE",
             ).distinct()
 
-        # NOTE: Filters for pending status to keep the list actionable
-        reviews = reviews.filter(review_status=ReviewStatus.PENDING)
+        # NOTE: Default to pending only, pass ?all=true for full history/audit
+        if request.query_params.get("all") != "true":
+            reviews = reviews.filter(review_status=ReviewStatus.PENDING)
 
         serializer = ReviewSerializer(reviews, many=True)
         return Response(serializer.data)

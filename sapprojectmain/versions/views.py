@@ -3,25 +3,31 @@ import hashlib
 import difflib
 import cloudinary.uploader
 import io
+from urllib.parse import urlparse
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Q
 from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
-# Model/Serializer Imports
 from .models import VersionsModel, VersionStatus
+from reviews.models import ReviewModel, ReviewStatus
+from documents.models import DocumentModel
 from .serializers import VersionSerializer
 
-# Permission Imports
-from core.permissions import HasDocumentReadPermission, HasDocumentWritePermission
+from core.permissions import (
+    HasDocumentReadPermission,
+    HasDocumentWritePermission,
+    IsAuthenticatedUser,
+)
+from rest_framework.permissions import IsAuthenticated
 
 
 def generate_checksum(file):
-    # NOTE: Generates a SHA-256 hash to ensure file integrity and detect changes
     sha256_hash = hashlib.sha256()
     file.seek(0)
     for byte_block in file.chunks():
@@ -30,26 +36,39 @@ def generate_checksum(file):
     return sha256_hash.hexdigest()
 
 
-# --- COLLECTION HANDLER (LIST & UPLOAD) ---
+def get_authorized_version(user, pk):
+    return get_object_or_404(
+        VersionsModel.objects.filter(
+            Q(document__created_by=user)
+            | Q(document__document_permissions__user=user)
+            | Q(created_by=user)
+        ).distinct(),
+        pk=pk,
+    )
+
+
+ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "png", "jpg", "jpeg"}
 
 
 class DocumentVersionHandler(APIView):
     def get_permissions(self):
-        # NOTE: GET requires read access while POST requires write permissions
         if self.request.method == "GET":
             return [HasDocumentReadPermission()]
         return [HasDocumentWritePermission()]
 
     def get(self, request, id):
-        from documents.models import DocumentModel
 
-        doc = get_object_or_404(DocumentModel, id=id)
+        doc = get_object_or_404(
+            DocumentModel.objects.filter(
+                Q(created_by=request.user) | Q(document_permissions__user=request.user)
+            ).distinct(),
+            id=id,
+        )
 
         versions = VersionsModel.objects.filter(document=doc).order_by(
             "-version_number"
         )
 
-        # NOTE: Restricts visibility of rejected versions to owners or admins
         is_owner = (
             doc.created_by == request.user
             or doc.document_permissions.filter(
@@ -64,29 +83,46 @@ class DocumentVersionHandler(APIView):
         return Response(serializer.data)
 
     def post(self, request, id):
-        from documents.models import DocumentModel
-        from reviews.models import ReviewModel
 
-        doc = get_object_or_404(DocumentModel, id=id)
+        doc = get_object_or_404(
+            DocumentModel.objects.filter(
+                Q(created_by=request.user) | Q(document_permissions__user=request.user)
+            ).distinct(),
+            id=id,
+        )
+
         file_obj = request.FILES.get("file")
 
         if not file_obj:
             return Response(
-                {"error": "No file uploaded"}, status=status.HTTP_400_BAD_REQUEST
+                {"error": "No file uploaded"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # NOTE: Calculates checksum and determines next version number increment
+        # FIX 1: File type whitelist check before anything else
+        ext = file_obj.name.rsplit(".", 1)[-1].lower() if "." in file_obj.name else ""
+        if ext not in ALLOWED_EXTENSIONS:
+            return Response(
+                {"error": f"File type '.{ext}' is not allowed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # FIX 2: Validate serializer BEFORE uploading to Cloudinary
+        serializer = VersionSerializer(data=request.data, context={"request": request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
         checksum = generate_checksum(file_obj)
+
         last_v = (
             VersionsModel.objects.filter(document=doc).order_by("version_number").last()
         )
+
         new_version_number = (last_v.version_number + 1) if last_v else 1
 
-        # NOTE: Structured storage path including owner and document IDs
         folder_path = f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
 
         try:
-            # NOTE: Uploads the file to Cloudinary and retrieves the secure URL
             upload_result = cloudinary.uploader.upload(
                 file_obj,
                 folder=folder_path,
@@ -99,56 +135,65 @@ class DocumentVersionHandler(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        serializer = VersionSerializer(data=request.data, context={"request": request})
+        with transaction.atomic():
+            new_version = serializer.save(
+                document=doc,
+                version_number=new_version_number,
+                file_path=file_url,
+                file_size=file_obj.size,
+                checksum=checksum,
+                status=VersionStatus.PENDING,
+                created_by=request.user,
+                parent_version=last_v,
+            )
 
-        if serializer.is_valid():
-            with transaction.atomic():
-                # NOTE: Persists version record and initializes a pending review
-                new_version = serializer.save(
-                    document=doc,
-                    version_number=new_version_number,
-                    file_path=file_url,
-                    file_size=file_obj.size,
-                    checksum=checksum,
-                    status=VersionStatus.PENDING,
-                    created_by=request.user,
-                    parent_version=last_v,
-                )
-                ReviewModel.objects.create(version=new_version, status="pending")
+            ReviewModel.objects.create(
+                version=new_version,
+                review_status=ReviewStatus.PENDING,
+            )
 
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# --- DETAIL & GITHUB-STYLE DIFF ---
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class VersionDetailView(APIView):
-    permission_classes = [HasDocumentReadPermission]
+    # FIX 3: Correct permission per method — readers cannot PATCH
+    def get_permissions(self):
+        if self.request.method in ["GET", "HEAD", "OPTIONS"]:
+            return [HasDocumentReadPermission()]
+        return [HasDocumentWritePermission()]
 
     def get(self, request, pk):
-        # NOTE: GET metadata for a specific version by primary key
-        version = get_object_or_404(VersionsModel, pk=pk)
-        return Response(VersionSerializer(version).data)
+        version = get_authorized_version(request.user, pk)
+        serializer = VersionSerializer(version)
+        return Response(serializer.data)
 
     def patch(self, request, pk):
-        # NOTE: PATCH to update version details if it has not been approved
-        version = get_object_or_404(VersionsModel, pk=pk)
+        version = get_authorized_version(request.user, pk)
 
-        # SECURITY: Approved versions are frozen to maintain historical integrity
         if version.status == VersionStatus.APPROVED:
             return Response(
                 {"error": "Finalized versions are immutable."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if "status" in request.data and not request.user.is_staff:
+            if request.data["status"] == VersionStatus.APPROVED:
+                return Response(
+                    {"error": "Only reviewers or staff can approve versions."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
         serializer = VersionSerializer(
-            version, data=request.data, partial=True, context={"request": request}
+            version,
+            data=request.data,
+            partial=True,
+            context={"request": request},
         )
+
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -156,13 +201,14 @@ class VersionDiffView(APIView):
     permission_classes = [HasDocumentReadPermission]
 
     def get(self, request, pk):
-        # NOTE: Performs a line-by-line text comparison against the parent version
-        version = get_object_or_404(VersionsModel, pk=pk)
 
+        version = get_authorized_version(request.user, pk)
+
+        # FIX 4: Cloudinary URLs have query params — parse properly
         binary_exts = ["pdf", "zip", "docx", "jpg", "png"]
-        ext = version.file_path.split(".")[-1].lower() if version.file_path else ""
+        raw_path = urlparse(version.file_path).path if version.file_path else ""
+        ext = raw_path.rsplit(".", 1)[-1].lower() if "." in raw_path else ""
 
-        # NOTE: Returns error if the file type is not suitable for text diffing
         if ext in binary_exts or not version.content:
             return Response(
                 {
@@ -173,14 +219,15 @@ class VersionDiffView(APIView):
             )
 
         parent = version.parent_version
+
         if not parent:
             return Response(
                 {"has_parent": False, "new_content": version.content, "diff": []}
             )
 
-        # NOTE: Standard difflib sequence matching to identify inserts, deletes, or equals
         old_lines = (parent.content or "").splitlines()
         new_lines = (version.content or "").splitlines()
+
         matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
         diff_output = []
 
@@ -205,54 +252,75 @@ class VersionDiffView(APIView):
         )
 
 
-# --- EXPORT VIEW ---
-
-
 class VersionExportView(APIView):
-    permission_classes = [HasDocumentReadPermission]
+    permission_classes = [IsAuthenticated, HasDocumentReadPermission]
 
-    def get(self, request, pk, format):
-        # NOTE: GET to generate a downloadable TXT or PDF of the version content
+    def get(self, request, pk, file_format):
+
         version = get_object_or_404(VersionsModel, pk=pk)
+
+        user = request.user
+
+        has_access = (
+            user.is_superuser
+            or version.created_by == user
+            or version.document.created_by == user
+            or version.document.document_permissions.filter(user=user).exists()
+        )
+
+        if not has_access:
+            return Response(
+                {"detail": "You do not have permission to access this resource."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         filename = f"{version.document.title}_v{version.version_number}"
 
-        if format == "txt":
-            # NOTE: Generates a plain text response with metadata header
-            header = f"DOC: {version.document.title}\nVER: {version.version_number}\n"
-            header += f"BY: {version.created_by.username}\n" + ("-" * 20) + "\n\n"
+        if file_format == "txt":
+            header = (
+                f"DOC: {version.document.title}\n"
+                f"VER: {version.version_number}\n"
+                f"BY: {version.created_by.username}\n" + ("-" * 20) + "\n\n"
+            )
+
             content = header + (
                 version.content or "Binary file content cannot be displayed."
             )
+
             response = HttpResponse(content, content_type="text/plain")
             response["Content-Disposition"] = f'attachment; filename="{filename}.txt"'
             return response
 
-        elif format == "pdf":
-            # NOTE: Uses reportlab to draw document content into a downloadable PDF
+        if file_format == "pdf":
             buffer = io.BytesIO()
             p = canvas.Canvas(buffer, pagesize=letter)
+
             p.setFont("Helvetica-Bold", 14)
             p.drawString(50, 750, f"Document: {version.document.title}")
+
             p.setFont("Helvetica", 10)
             p.drawString(
                 50,
                 735,
                 f"Version: {version.version_number} | Author: {version.created_by.username}",
             )
+
             p.line(50, 725, 550, 725)
 
             p.setFont("Courier", 9)
-            to = p.beginText(50, 700)
-            lines = (version.content or "Binary file content.").splitlines()
-            for line in lines[:60]:
-                to.textLine(line)
-            p.drawText(to)
+            text = p.beginText(50, 700)
+
+            for line in (version.content or "Binary file content.").splitlines()[:60]:
+                text.textLine(line)
+
+            p.drawText(text)
             p.showPage()
             p.save()
+
             buffer.seek(0)
             return FileResponse(buffer, as_attachment=True, filename=f"{filename}.pdf")
 
         return Response(
-            {"error": "Invalid format Choose 'pdf' or 'txt'"},
+            {"error": "Invalid format. Use 'pdf' or 'txt'."},
             status=status.HTTP_400_BAD_REQUEST,
         )

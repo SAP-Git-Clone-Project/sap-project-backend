@@ -14,6 +14,8 @@ from .serializers import (
     UserSerializer,
     UserSearchSerializer,
 )
+from document_permissions.models import DocumentPermissionModel
+from django.db.models import Q
 
 # NOTE: Custom permission classes for access control
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser
@@ -132,6 +134,12 @@ class ToggleUserView(APIView):
         user = get_object_or_404(UserModel, pk=id)
 
         # SECURITY: Prevents non-superusers from deactivating superuser accounts
+        if user == request.user:
+            return Response(
+                {"detail": "You cannot deactivate your own account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if user.is_superuser and not request.user.is_superuser:
             return Response(
                 {"detail": "Staff cannot modify Superusers."},
@@ -148,22 +156,42 @@ class ToggleUserView(APIView):
 
 class UserDetailView(APIView):
     def get_permissions(self):
-        # NOTE: Dynamics permissions where GET is authenticated but modifications are staff-only
         if self.request.method == "GET":
             return [IsAuthenticatedUser()]
         return [IsStaffOrSuperUser()]
 
     def get(self, request, id):
-        # NOTE: GET specific user details by UUID
-        user = get_object_or_404(UserModel, pk=id)
-        serializer = UserSerializer(user)
-        return Response(serializer.data)
+        # Staff and superusers see anyone
+        if request.user.is_staff or request.user.is_superuser:
+            user = get_object_or_404(UserModel, pk=id)
+            return Response(UserSerializer(user).data)
+
+        # Always can see yourself
+        if str(request.user.id) == str(id):
+            return Response(UserSerializer(request.user).data)
+
+        target_user = get_object_or_404(UserModel, pk=id)
+
+        # Get all doc IDs the requesting user has access to
+        my_doc_ids = DocumentPermissionModel.objects.filter(
+            user=request.user
+        ).values_list("document_id", flat=True)
+
+        # Check if target user is also on any of those same docs
+        shares_document = DocumentPermissionModel.objects.filter(
+            user=target_user, document_id__in=my_doc_ids
+        ).exists()
+
+        if not shares_document:
+            return Response(
+                {"detail": "Permission denied."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response(UserSerializer(target_user).data)
 
     def put(self, request, id):
-        # NOTE: PUT to update a specific user account partially
         user = get_object_or_404(UserModel, pk=id)
-
-        # SECURITY: Restricts modification of superusers to other superusers
         if user.is_superuser and not request.user.is_superuser:
             return Response(
                 {"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN
@@ -176,9 +204,7 @@ class UserDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, id):
-        # NOTE: DELETE to remove a user account from the system
         user = get_object_or_404(UserModel, pk=id)
-
         if user.is_superuser and not request.user.is_superuser:
             return Response(
                 {"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN
@@ -194,16 +220,13 @@ class CurrentUserDetailView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get(self, request):
-        # NOTE: GET the profile of the currently logged-in user
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
 
     def put(self, request):
-        # NOTE: PUT to update own profile or change password
         new_password = request.data.get("new_password")
 
         if new_password:
-            # SECURITY: Requires old password verification for password changes
             if not request.user.check_password(request.data.get("old_password")):
                 return Response(
                     {"detail": "Incorrect old password."},
@@ -211,6 +234,14 @@ class CurrentUserDetailView(APIView):
                 )
             request.user.set_password(new_password)
             request.user.save()
+
+            # FIX: Blacklist the refresh token so old sessions die immediately
+            try:
+                refresh_token = request.data.get("refresh")
+                if refresh_token:
+                    RefreshToken(refresh_token).blacklist()
+            except Exception:
+                pass  # Don't block the response if blacklist fails
 
         serializer = UserSerializer(
             request.user, data=request.data, partial=True, context={"request": request}
@@ -220,6 +251,12 @@ class CurrentUserDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request):
-        # NOTE: DELETE to allow a user to deactivate/delete their own account
+        # FIX: Require password confirmation before permanent deletion
+        password = request.data.get("password")
+        if not password or not request.user.check_password(password):
+            return Response(
+                {"detail": "Password confirmation required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         request.user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

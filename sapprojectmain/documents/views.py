@@ -121,7 +121,10 @@ class ShareDocumentView(APIView):
 
         if serializer.is_valid():
             # IMP: Ensure sharing is performed on an active document
-            document = DocumentModel.objects.active_documents().get(pk=id)
+            try:
+                document = DocumentModel.objects.active_documents().get(pk=id)
+            except DocumentModel.DoesNotExist:
+                return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
             serializer.save(document=document)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

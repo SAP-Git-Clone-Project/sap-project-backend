@@ -90,30 +90,24 @@ class HasDocumentPermission(BasePermission):
 
 
 class HasDocumentReadPermission(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated)
+
     def has_object_permission(self, request, view, obj):
         user = request.user
-        if not user or not user.is_authenticated:
-            return False
 
         if user.is_superuser:
             return True
 
-        # Any valid entry in the permission table allows reading
-        return obj.document_permissions.filter(user=user).exists()
-
-
-class HasDocumentWritePermission(BasePermission):
-    def has_object_permission(self, request, view, obj):
-        user = request.user
-        if not user or not user.is_authenticated:
-            return False
-
-        if user.is_superuser:
+        if hasattr(obj, "created_by") and obj.created_by == user:
             return True
 
-        return obj.document_permissions.filter(
-            user=user, permission_type="WRITE"
-        ).exists()
+        doc = obj if hasattr(obj, "document_permissions") else getattr(obj, "document", None)
+
+        if doc:
+            return doc.document_permissions.filter(user=user).exists()
+
+        return False
 
 
 class HasDocumentApprovePermission(BasePermission):
@@ -173,4 +167,16 @@ class IsReviewerForDocument(BasePermission):
         # with the specific type 'APPROVE'
         return DocumentPermissionModel.objects.filter(
             document=obj.version.document, user=user, permission_type="APPROVE"
+        ).exists()
+
+
+class HasDocumentWritePermission(BasePermission): 
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser:
+            return True
+        return obj.document_permissions.filter(
+            user=user, permission_type="WRITE"
         ).exists()
