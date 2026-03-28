@@ -6,89 +6,58 @@ from django.contrib.auth.models import (
     BaseUserManager,
 )
 
-from roles.models import RolesModel
-from roles.models import UserRolesModel
 
-# USER MANAGER
 class UserManager(BaseUserManager):
-    def create_user(self, username, email, password=None, **extra_fields):
+    def create_user(self, email, username, password=None, **extra_fields):
+        # NOTE: Ensures email is provided and normalized to lowercase
         if not email:
             raise ValueError("Email is required")
-
-        if not username:
-            raise ValueError("Username is required")
-
         email = self.normalize_email(email).lower()
+        user = self.model(email=email, username=username, **extra_fields)
 
-        user = self.model(username=username, email=email, **extra_fields)
-
+        # NOTE: Hashes the password before saving to the database
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, username, email, password=None, **extra_fields):
+    def create_superuser(self, email, username, password=None, **extra_fields):
+        # NOTE: Helper to create an account with administrative privileges
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        extra_fields.setdefault("is_enabled", True)
-
-        return self.create_user(username, email, password, **extra_fields)
+        return self.create_user(email, username, password, **extra_fields)
 
 
-# CUSTOM USER MODEL
 class UserModel(AbstractBaseUser, PermissionsMixin):
-
+    # NOTE: Secure UUID used for user identification
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    username = models.CharField(max_length=50, unique=True)
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=50)
+    last_name = models.CharField(max_length=50)
 
-    first_name = models.CharField(max_length=50, blank=False, null=False)
-
-    last_name = models.CharField(max_length=50, blank=False, null=False)
-
-    username = models.CharField(max_length=50, unique=True, blank=False, null=False)
-
-    email = models.EmailField(unique=True, blank=False, null=False)
-
-    # password = models.CharField(max_length=255, blank=False, null=False)
-
-    avatar = models.TextField(
+    # NOTE: Stores the link to the user profile image with a default fallback
+    avatar = models.URLField(
+        max_length=500,
         blank=True,
         null=True,
         default="https://res.cloudinary.com/dbgpxmjln/image/upload/v1766143170/deafult-avatar_tyvazc.png",
     )
 
-    is_enabled = models.BooleanField(default=True)
-
+    # NOTE: Flags for account status and system access levels
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
-
     created_at = models.DateTimeField(auto_now_add=True)
-
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = UserManager()
 
+    # NOTE: Configures email as the primary login identifier
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
 
-    roles = models.ManyToManyField(
-        RolesModel,
-        through=UserRolesModel,
-        through_fields=("user", "role"),
-        related_name="users",
-        blank=True,
-    )
-
     class Meta:
         db_table = "users"
-        ordering = ["-created_at"]
-        constraints = [
-            models.UniqueConstraint(fields=["email"], name="unique_email"),
-            models.UniqueConstraint(fields=["username"], name="unique_username"),
-        ]
 
     def __str__(self):
+        # NOTE: Returns email for user identification in admin and logs
         return self.email
-
-    def save(self, *args, **kwargs):
-        if self.email:
-            self.email = self.email.lower()
-        super().save(*args, **kwargs)

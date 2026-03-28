@@ -1,70 +1,74 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import UserModel
 
-@admin.register(UserModel)
-class UserAdmin(admin.ModelAdmin):
-    model = UserModel
 
-    # fields to show
+@admin.register(UserModel)
+class UserAdmin(BaseUserAdmin):
+    # NOTE: Table columns for user management including status and timestamps
     list_display = (
-        "id",
+        "username",
+        "email",
         "first_name",
         "last_name",
-        "email",
-        "username",
-        "avatar",
-        "is_enabled",
+        "is_active",
         "is_staff",
         "is_superuser",
         "created_at",
         "updated_at",
     )
 
-    list_filter = (
-        "is_enabled",
-        "is_staff",
-        "is_superuser",
-        "created_at",
-    )
+    # NOTE: Sidebar filters for account status and activity dates
+    list_filter = ("is_active", "is_staff", "is_superuser", "created_at", "updated_at")
 
-    search_fields = (
-        "email",
-        "username",
-        "id",
-    )
-
+    # NOTE: Search bar targets primary identity and contact fields
+    search_fields = ("email", "username", "first_name", "last_name")
     ordering = ("-created_at",)
 
-    # admin show user table config
+    # SECURITY: System-generated IDs and timestamps remain read-only
+    readonly_fields = ("id", "created_at", "updated_at")
+
+    # NOTE: Organizes user data into distinct collapsible sections for the admin
     fieldsets = (
         (
-            "Main Info",
+            "Account Identity",
             {
                 "fields": (
+                    "id",
                     "email",
-                    "first_name",
-                    "last_name",
                     "username",
                     "password",
+                    "first_name",
+                    "last_name",
                     "avatar",
                 )
             },
         ),
         (
-            "Permissions",
+            "System Status & Authority",
             {
                 "fields": (
-                    "is_enabled",
+                    "is_active",
                     "is_staff",
                     "is_superuser",
-                    "groups",
-                    "user_permissions",
                 )
             },
         ),
-        ("Dates", {"fields": ("created_at", "updated_at")}),
+        (
+            "Security Groups",
+            {
+                "classes": ("collapse",),
+                "fields": ("groups", "user_permissions"),
+            },
+        ),
+        ("Metadata", {"fields": ("created_at", "updated_at")}),
     )
 
-    add_fieldsets = None
-
+    # NOTE: Provides a side-by-side UI for managing group and permission relationships
     filter_horizontal = ("groups", "user_permissions")
+
+    def save_model(self, request, obj, form, change):
+        # NOTE: Ensures passwords are correctly hashed when modified via admin
+        if "password" in form.changed_data:
+            obj.set_password(obj.password)
+        super().save_model(request, obj, form, change)
