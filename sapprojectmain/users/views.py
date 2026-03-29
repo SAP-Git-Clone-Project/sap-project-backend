@@ -69,6 +69,7 @@ class LoginView(APIView):
                     "email": user.email,
                     "username": user.username,
                     "is_staff": user.is_staff,
+                    "avatar": user.avatar.url if user.avatar else None,
                 },
                 "access": str(refresh.access_token),
                 "refresh": str(refresh),
