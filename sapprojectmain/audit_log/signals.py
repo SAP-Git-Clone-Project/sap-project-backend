@@ -20,43 +20,48 @@ User = get_user_model()
 
 @receiver(post_save, sender=User)
 def log_user_changes(sender, instance, created, update_fields, **kwargs):
+    # 1. HANDLE NEW REGISTRATION
     if created:
         action = "create user"
         detail = f"New user registered: {instance.email} (ID: {instance.id})"
-    elif update_fields and update_fields != frozenset({'last_login'}):
+
+    # 2. HANDLE UPDATES (ONLY if it's NOT a new creation)
+    # We check if update_fields is None (full save) OR contains fields that aren't 'last_login'
+    elif update_fields is None or (update_fields and "last_login" not in update_fields):
         action = "update user"
         detail = f"User profile updated for: {instance.email} (ID: {instance.id})"
+
+    # 3. IGNORE EVERYTHING ELSE (like the automatic 'last_login' update)
     else:
         return
 
-    # SECURITY: Logging account lifecycle events for identity management oversight
+    # SECURITY: Using 'or "0.0.0.0"' to prevent database crashes if IP capture fails
     AuditLogModel.objects.create(
         user=instance,
         action_type=action,
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=detail,
     )
 
 
 @receiver(user_logged_in)
 def log_login(sender, user, **kwargs):
-    # SECURITY: Tracking successful login events with source IP verification
+    # Capture the login event. Ensure your Serializer triggers this for JWT!
     AuditLogModel.objects.create(
         user=user,
         action_type="login",
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=f"User {user.email} (ID: {user.id}) successfully logged in.",
     )
 
 
 @receiver(user_logged_out)
 def log_logout(sender, user, **kwargs):
-    # NOTE: Capture logout events; user may be None in some session expiry edge cases
     if user:
         AuditLogModel.objects.create(
             user=user,
             action_type="logout",
-            ip_address=get_current_ip(),
+            ip_address=get_current_ip() or "0.0.0.0",
             description=f"User {user.email} (ID: {user.id}) logged out.",
         )
 
@@ -150,7 +155,7 @@ def log_review_activity(sender, instance, created, **kwargs):
         action = "reject version"
     else:
         return
-    
+
     if not instance.reviewer:
         return
 
