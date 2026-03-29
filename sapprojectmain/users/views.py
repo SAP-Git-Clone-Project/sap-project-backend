@@ -59,7 +59,7 @@ class LoginView(APIView):
         user = serializer.validated_data["user"]
 
         # IMP: Trigger login signal for security and audit logging
-        user_logged_in.send(sender=user.__class__, request=request, user=user)
+        # user_logged_in.send(sender=user.__class__, request=request, user=user)
 
         refresh = RefreshToken.for_user(user)
         return Response(

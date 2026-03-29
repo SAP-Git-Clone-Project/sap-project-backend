@@ -21,9 +21,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+ALLOWED_HOSTS = ['127.0.0.1', 'https://sap-project-backend-2acs.onrender.com/', 'localhost']
 
 # Render automatically sets this variable on their servers
 render_external_hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
