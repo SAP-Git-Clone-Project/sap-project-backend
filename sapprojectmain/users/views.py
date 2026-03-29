@@ -35,7 +35,7 @@ class RegisterView(APIView):
         user = serializer.save()
 
         # NOTE: Signals login event for audit tracking upon registration
-        user_logged_in.send(sender=user.__class__, request=request, user=user)
+        # user_logged_in.send(sender=user.__class__, request=request, user=user)
 
         refresh = RefreshToken.for_user(user)
         return Response(
