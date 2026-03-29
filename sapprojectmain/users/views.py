@@ -6,6 +6,7 @@ from rest_framework.permissions import AllowAny
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in, user_logged_out
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
 from .models import UserModel
 from .serializers import (
@@ -205,11 +206,19 @@ class UserDetailView(APIView):
 
     def delete(self, request, id):
         user = get_object_or_404(UserModel, pk=id)
+
+        # Permission Check
         if user.is_superuser and not request.user.is_superuser:
             return Response(
                 {"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN
             )
+
+        # DELETE RELATED TOKENS FIRST
+        OutstandingToken.objects.filter(user=user).delete()
+
+        # 2. DELETE THE USER
         user.delete()
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -251,12 +260,19 @@ class CurrentUserDetailView(APIView):
         return Response(serializer.data)
 
     def delete(self, request):
-        # FIX: Require password confirmation before permanent deletion
         password = request.data.get("password")
         if not password or not request.user.check_password(password):
             return Response(
                 {"detail": "Password confirmation required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        request.user.delete()
+
+        user = request.user
+
+        # 1. CLEAR TOKENS
+        OutstandingToken.objects.filter(user=user).delete()
+
+        # 2. PERMANENT DELETE
+        user.delete()
+
         return Response(status=status.HTTP_204_NO_CONTENT)
