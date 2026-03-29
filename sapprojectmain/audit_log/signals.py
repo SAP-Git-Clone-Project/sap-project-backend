@@ -23,7 +23,7 @@ def log_user_changes(sender, instance, created, update_fields, **kwargs):
     if created:
         action = "create user"
         detail = f"New user registered: {instance.email} (ID: {instance.id})"
-    elif update_fields:
+    elif update_fields and update_fields != frozenset({'last_login'}):
         action = "update user"
         detail = f"User profile updated for: {instance.email} (ID: {instance.id})"
     else:
