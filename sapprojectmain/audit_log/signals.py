@@ -19,14 +19,15 @@ User = get_user_model()
 
 
 @receiver(post_save, sender=User)
-def log_user_changes(sender, instance, created, **kwargs):
-    # NOTE: Differentiating between initial registration and profile updates
+def log_user_changes(sender, instance, created, update_fields, **kwargs):
     if created:
         action = "create user"
         detail = f"New user registered: {instance.email} (ID: {instance.id})"
-    else:
+    elif update_fields:
         action = "update user"
         detail = f"User profile updated for: {instance.email} (ID: {instance.id})"
+    else:
+        return
 
     # SECURITY: Logging account lifecycle events for identity management oversight
     AuditLogModel.objects.create(
