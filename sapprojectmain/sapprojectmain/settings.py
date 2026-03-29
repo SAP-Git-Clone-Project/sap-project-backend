@@ -56,6 +56,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
+    "audit_log.middleware.AuditIPMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -64,7 +65,6 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "audit_log.middleware.AuditIPMiddleware",
 ]
 
 # CORS origin
@@ -167,11 +167,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
-
+TIME_ZONE = 'Europe/Sofia'  # This sets the offset to +2 or +3 automatically
 USE_I18N = True
-
-USE_TZ = True
+USE_TZ = True # IMPORTANT: Keep this True
 
 
 # Static files (CSS, JavaScript, Images)
