@@ -7,6 +7,8 @@ from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework.permissions import IsAuthenticated
 
 from audit_log.middleware import get_current_ip
 from audit_log.models import AuditLogModel
@@ -82,7 +84,8 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
-    permission_classes = [IsAuthenticatedUser]
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticatedUser] 
 
     def post(self, request):
         try:
@@ -91,18 +94,22 @@ class LogoutView(APIView):
             token.blacklist()
 
             user = request.user
+            ip = get_current_ip(request)
 
             AuditLogModel.objects.create(
                 user=user,
                 action_type="logout",
-                ip_address=get_current_ip(request),  # ✅ FIX
+                ip_address=ip,
                 description=f"User {user.email} logged out.",
             )
 
             return Response({"detail": "Logged out."}, status=200)
 
-        except Exception:
+        except Exception as e:
+            print("ERROR:", str(e))
             return Response({"detail": "Invalid token."}, status=400)
+        
+
 # --- 2. USER DISCOVERY ---
 
 
