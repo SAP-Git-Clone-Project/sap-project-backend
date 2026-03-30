@@ -1,33 +1,47 @@
 import threading
 
-# NOTE: Thread-local storage to safely isolate request data per execution thread
 _thread_locals = threading.local()
 
-def get_current_ip():
-    # NOTE: Global helper to retrieve the stored IP for audit logging
-    return getattr(_thread_locals, "request_ip", None)
 
 class AuditIPMiddleware:
+    """
+    Stores client IP per request thread so it can be used in signals safely.
+    """
+
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        # SECURITY: Prioritize X-Forwarded-For to capture true client IP behind proxies
         x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
+
         if x_forwarded_for:
-            ip = x_forwarded_for.split(",")[0]
+            ip = x_forwarded_for.split(",")[0].strip()
         else:
             ip = request.META.get("REMOTE_ADDR")
 
-        # IMP: Temporarily store the IP address in the current thread's local storage
+        # store for both views + signals
+        request.client_ip = ip
         _thread_locals.request_ip = ip
 
         response = self.get_response(request)
 
-        # CLEAN: Remove thread-local data after response to prevent memory leaks
+        # cleanup after request
         if hasattr(_thread_locals, "request_ip"):
             del _thread_locals.request_ip
 
         return response
 
-# IMP: Ensure this middleware is registered in settings.py to enable IP tracking
+
+def get_current_ip(request=None):
+    """
+    Works in:
+    - Views (pass request)
+    - Signals (no request)
+    """
+
+    # 1. If request exists (views / APIs)
+    if request is not None:
+        return getattr(request, "client_ip", None) or "system"
+
+    # 2. If no request (signals)
+    return getattr(_thread_locals, "request_ip", None) or "system"

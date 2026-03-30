@@ -92,11 +92,10 @@ class LogoutView(APIView):
 
             user = request.user
 
-            # 🔥 DIRECT AUDIT LOG (no signals)
             AuditLogModel.objects.create(
                 user=user,
                 action_type="logout",
-                ip_address=get_current_ip() or "0.0.0.0",
+                ip_address=get_current_ip(request),  # ✅ FIX
                 description=f"User {user.email} logged out.",
             )
 
@@ -104,8 +103,6 @@ class LogoutView(APIView):
 
         except Exception:
             return Response({"detail": "Invalid token."}, status=400)
-
-
 # --- 2. USER DISCOVERY ---
 
 
