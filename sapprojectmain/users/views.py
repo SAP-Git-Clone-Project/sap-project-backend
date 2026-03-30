@@ -8,8 +8,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
-from sapprojectmain.audit_log.middleware import get_current_ip
-from sapprojectmain.audit_log.models import AuditLogModel
+from audit_log.middleware import get_current_ip
+from audit_log.models import AuditLogModel
 
 from .models import UserModel
 from .serializers import (
