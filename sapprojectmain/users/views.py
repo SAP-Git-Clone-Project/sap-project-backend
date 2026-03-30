@@ -8,6 +8,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 
+from sapprojectmain.audit_log.middleware import get_current_ip
+from sapprojectmain.audit_log.models import AuditLogModel
+
 from .models import UserModel
 from .serializers import (
     RegisterSerializer,
@@ -82,22 +85,25 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def post(self, request):
-        # NOTE: POST to blacklist the refresh token and terminate the session
         try:
             refresh_token = request.data.get("refresh")
             token = RefreshToken(refresh_token)
-
-            user = request.user
             token.blacklist()
 
-            # NOTE: Signal logout event for audit trails
-            user_logged_out.send(sender=user.__class__, request=request, user=user)
+            user = request.user
 
-            return Response({"detail": "Logged out."}, status=status.HTTP_200_OK)
-        except Exception:
-            return Response(
-                {"detail": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST
+            # 🔥 DIRECT AUDIT LOG (no signals)
+            AuditLogModel.objects.create(
+                user=user,
+                action_type="logout",
+                ip_address=get_current_ip() or "0.0.0.0",
+                description=f"User {user.email} logged out.",
             )
+
+            return Response({"detail": "Logged out."}, status=200)
+
+        except Exception:
+            return Response({"detail": "Invalid token."}, status=400)
 
 
 # --- 2. USER DISCOVERY ---
