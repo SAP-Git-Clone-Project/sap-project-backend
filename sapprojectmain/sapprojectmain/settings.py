@@ -87,7 +87,12 @@ CORS_ALLOW_METHODS = [
 ]
 
 # CORS origin
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://sap-project-frontend.vercel.app",
+]
 
 # Custom user, auth default usage
 AUTH_USER_MODEL = "users.UserModel"
