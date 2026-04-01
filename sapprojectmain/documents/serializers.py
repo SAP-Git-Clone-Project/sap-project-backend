@@ -43,7 +43,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             active_version = obj.versions.filter(is_active=True).first()
             if active_version:
                 return [VersionSerializer(active_version).data]
-            return []
+            return []    
 
     # Optional: title validation and creation/update logic
     def validate_title(self, value):
