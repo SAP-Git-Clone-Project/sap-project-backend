@@ -1,17 +1,20 @@
-from rest_framework import serializers
+from rest_framework import serializers  # <--- Add this line!
 from .models import AuditLogModel
 
-# SERIALIZER FOR SYSTEM AUDIT RECORDS
 class AuditLogSerializer(serializers.ModelSerializer):
-    # NOTE: Mapping the username string for frontend display clarity
     username = serializers.ReadOnlyField(source="user.username")
-    # NOTE: Fetching the related document title for easier log identification
     document_title = serializers.ReadOnlyField(source="document.title")
+    created_by_avatar_url = serializers.SerializerMethodField()
 
     class Meta:
         model = AuditLogModel
-        # IMP: Exporting all fields to provide a full audit trail via the API
-        fields = '__all__'
-        
-# SECURITY: Ensure the viewset using this serializer enforces strict read-only access
-# NOTE: Consider prefetching 'user' and 'document' to optimize performance
+        fields = [
+            'id', 'user', 'username', 'action_type', 'document', 
+            'document_title', 'ip_address', 'timestamp', 
+            'description', 'created_by_avatar_url'
+        ]
+
+    def get_created_by_avatar_url(self, obj):
+        if obj.user:
+            return obj.user.avatar
+        return "https://res.cloudinary.com/dbgpxmjln/image/upload/v1766143170/deafult-avatar_tyvazc.png"
