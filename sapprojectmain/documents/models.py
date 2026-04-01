@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.conf import settings
 from django.db import transaction
 
+from versions.models import VersionsModel
 
 # --- DOCUMENT QUERY SET ---
 class DocumentQuerySet(models.QuerySet):
@@ -23,6 +24,11 @@ class DocumentManager(models.Manager):
 
     def active_documents(self):
         return self.get_queryset().active()
+    
+    def visible_documents(self, user):
+        active_version = VersionsModel.objects.filter(document=models.OuterRef("pk"), is_active=True)
+
+        return self.active_documents().annotate(has_active_version=models.Exists(active_version)).filter(Q(created_by=user) | Q(has_active_version=True)).active()
 
     def create_document(self, created_by, title, **extra_fields):
         # NOTE: Handles document creation and initial owner permissions

@@ -1,13 +1,13 @@
 from rest_framework import serializers
 from .models import DocumentModel
-
-# NOTE: Dynamic approach used for related models to avoid circular imports
+from versions.serializers import VersionSerializer
 
 
 class DocumentSerializer(serializers.ModelSerializer):
-    # NOTE: Read-only field to provide owner context to the frontend
     created_by_username = serializers.ReadOnlyField(source="created_by.username")
-
+    active_version = serializers.SerializerMethodField()
+    versions = serializers.SerializerMethodField()
+    
     class Meta:
         model = DocumentModel
         fields = [
@@ -17,52 +17,58 @@ class DocumentSerializer(serializers.ModelSerializer):
             "created_by_username",
             "created_at",
             "updated_at",
+            "active_version",
+            "versions",
         ]
-        # NOTE: System-managed fields restricted from user input
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
+    def get_active_version(self, obj):
+        version = obj.versions.filter(is_active=True).first()
+        if version:
+            return VersionSerializer(version).data
+        return None
+
+    def get_versions(self, obj):
+        """
+        Return all versions if the request user is the creator,
+        otherwise return only the active version.
+        """
+        request = self.context.get("request", None)
+        if request and request.user == obj.created_by:
+            return VersionSerializer(obj.versions.all(), many=True).data
+        else:
+            active_version = obj.versions.filter(is_active=True).first()
+            if active_version:
+                return [VersionSerializer(active_version).data]
+            return []
+
+    # Optional: title validation and creation/update logic
     def validate_title(self, value):
-        # NOTE: Basic check to ensure title contains actual text
         if not value or not value.strip():
             raise serializers.ValidationError("Title cannot be empty")
         return value
 
     def validate(self, data):
-        # NOTE: Validates title uniqueness for active documents only
         request = self.context.get("request")
         if not request or not request.user:
             return data
 
         user = request.user
         title = data.get("title")
-
-        # SECURITY: Prevents name collisions while allowing reuse of deleted titles
-        queryset = DocumentModel.objects.filter(
-            created_by=user, title=title, is_deleted=False
-        )
-
-        # NOTE: Exclude current instance during updates to avoid self-collision
+        queryset = DocumentModel.objects.filter(created_by=user, title=title, is_deleted=False)
         if self.instance:
             queryset = queryset.exclude(id=self.instance.id)
-
         if queryset.exists():
             raise serializers.ValidationError(
                 {"title": "You already have an active document with this title"}
             )
-
         return data
 
     def create(self, validated_data):
-        # IMP: Uses manager method to handle atomic doc creation and permission setup
         request = self.context.get("request")
-
-        # NOTE: Passes authenticated user as the permanent owner
-        return DocumentModel.objects.create_document(
-            created_by=request.user, **validated_data
-        )
+        return DocumentModel.objects.create_document(created_by=request.user, **validated_data)
 
     def update(self, instance, validated_data):
-        # NOTE: Standard update logic for modifying document title
         instance.title = validated_data.get("title", instance.title)
         instance.save()
         return instance

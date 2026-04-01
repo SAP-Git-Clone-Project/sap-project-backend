@@ -87,11 +87,11 @@ class DocumentListCreateView(APIView):
         user = request.user
         if user.is_superuser:
             # NOTE: Superusers can see all active documents
-            documents = DocumentModel.objects.active_documents()
+            documents = DocumentModel.objects.visible_documents(user)
         else:
             # SECURITY: Checks permission table across app boundaries
             documents = (
-                DocumentModel.objects.active_documents()
+                DocumentModel.objects.visible_documents(user)
                 .filter(document_permissions__user=user)
                 .distinct()
             )
