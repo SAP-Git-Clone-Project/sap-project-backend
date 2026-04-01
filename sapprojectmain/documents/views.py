@@ -98,6 +98,8 @@ class DocumentListCreateView(APIView):
                 .distinct()
             )
 
+        documents = documents.order_by("-updated_at")
+
         serializer = DocumentSerializer(documents, many=True)
         return Response(serializer.data)
 
