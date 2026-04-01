@@ -5,6 +5,7 @@ from versions.serializers import VersionSerializer
 
 class DocumentSerializer(serializers.ModelSerializer):
     created_by_username = serializers.ReadOnlyField(source="created_by.username")
+    created_by_avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
     active_version = serializers.SerializerMethodField()
     versions = serializers.SerializerMethodField()
     
@@ -15,6 +16,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             "title",
             "created_by",
             "created_by_username",
+            "created_by_avatar_url",
             "created_at",
             "updated_at",
             "active_version",
