@@ -34,8 +34,9 @@ class DocumentSerializer(serializers.ModelSerializer):
         otherwise return only the active version.
         """
         request = self.context.get("request", None)
-        if request and request.user == obj.created_by:
-            return VersionSerializer(obj.versions.all(), many=True).data
+        if request:
+            if request.user.is_staff or request.user == obj.created_by:
+                return VersionSerializer(obj.versions.all(), many=True).data
         else:
             active_version = obj.versions.filter(is_active=True).first()
             if active_version:
