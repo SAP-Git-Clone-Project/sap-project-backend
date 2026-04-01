@@ -86,8 +86,10 @@ class DocumentListCreateView(APIView):
         # NOTE: Lists documents accessible to the user
         user = request.user
         if user.is_superuser:
+            documents = DocumentModel.objects.get_queryset()
+        elif user.is_staff:
             # NOTE: Superusers can see all active documents
-            documents = DocumentModel.objects.visible_documents(user)
+            documents = DocumentModel.objects.active_documents()
         else:
             # SECURITY: Checks permission table across app boundaries
             documents = (
