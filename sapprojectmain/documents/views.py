@@ -86,7 +86,7 @@ class DocumentListCreateView(APIView):
         # NOTE: Lists documents accessible to the user
         user = request.user
         if user.is_superuser:
-            documents = DocumentModel.objects.get_queryset()
+            documents = DocumentModel.objects.all()
         elif user.is_staff:
             # NOTE: Superusers can see all active documents
             documents = DocumentModel.objects.active_documents()
@@ -104,6 +104,9 @@ class DocumentListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
+        if request.user.is_staff:
+            return Response({"detail": "Staff users cannot create documents."}, status=status.HTTP_403_FORBIDDEN)
+
         # NOTE: Triggers manager to create doc and auto-grant delete rights
         serializer = DocumentSerializer(data=request.data, context={"request": request})
         if serializer.is_valid():
