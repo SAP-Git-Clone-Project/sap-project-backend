@@ -10,6 +10,7 @@ from django.db import transaction
 from .models import ReviewModel, ReviewStatus
 from .serializers import ReviewSerializer
 from versions.models import VersionsModel, VersionStatus
+from document_permissions.models import DocumentPermissionModel
 from django.contrib.auth import get_user_model
 from core.permissions import IsAuthenticatedUser, IsReviewerForDocument
 
@@ -100,6 +101,12 @@ class ReviewCreateView(APIView):
                     reviewer=reviewer,
                 )
 
+                DocumentPermissionModel.objects.update_or_create(
+                    user=reviewer,
+                    document=version.document,
+                    defaults={"permission_type": "APPROVE"},
+                )
+
                 # Update version status
                 version.status = VersionStatus.PENDING
                 version.save()
@@ -125,7 +132,7 @@ class ReviewListView(APIView):
         if user.is_staff or user.is_superuser:
             reviews = ReviewModel.objects.all()
         else:
-            reviews = ReviewModel.objects.filter(reviewer=user).select_related("version").distinct()
+            reviews = ReviewModel.objects.filter(reviewer_id=user).select_related("version").distinct()
 
         # NOTE: Default to pending only, pass ?all=true for full history/audit
         if request.query_params.get("all") != "true":

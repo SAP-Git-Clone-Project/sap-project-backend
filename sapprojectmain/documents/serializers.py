@@ -25,9 +25,27 @@ class DocumentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
     def get_active_version(self, obj):
+        request = self.context.get("request", None)
+        user = getattr(request, "user", None)
+
+        # First, try to get the active version
         version = obj.versions.filter(is_active=True).first()
         if version:
             return VersionSerializer(version).data
+
+        # If no active version, check for permissions
+        if user:
+            permission_qs = obj.document_permissions.filter(
+                user=user,
+                permission_type__in=["READ", "WRITE", "DELETE", "APPROVE"]
+            )
+            if permission_qs.exists() or user.is_superuser or user == obj.created_by:
+                # Return the latest version regardless of is_active
+                latest_version = obj.versions.order_by("-created_at").last()
+                if latest_version:
+                    return VersionSerializer(latest_version).data
+
+        # Fallback for anonymous users or no permissions
         return None
 
     def get_versions(self, obj):

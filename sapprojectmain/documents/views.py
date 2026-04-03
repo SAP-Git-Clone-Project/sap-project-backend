@@ -43,7 +43,7 @@ class DocumentDetailView(APIView):
         document = self.get_object(id)
         if not document:
             return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = DocumentSerializer(document)
+        serializer = DocumentSerializer(document, context={"request": request})
         return Response(serializer.data)
 
     def put(self, request, id):
@@ -100,7 +100,7 @@ class DocumentListCreateView(APIView):
 
         documents = documents.order_by("-updated_at")
 
-        serializer = DocumentSerializer(documents, many=True)
+        serializer = DocumentSerializer(documents, many=True, context={"request": request})
         return Response(serializer.data)
 
     def post(self, request):
