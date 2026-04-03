@@ -57,11 +57,15 @@ class DocumentVersionHandler(APIView):
         return [HasDocumentWritePermission()]
 
     def get(self, request, id):
-
-        doc = get_object_or_404(
-            DocumentModel.objects.filter(
+        if request.user.is_superuser:
+            docs = DocumentModel.objects.all()
+        else:
+            docs = DocumentModel.objects.filter(
                 Q(created_by=request.user) | Q(document_permissions__user=request.user)
             ).distinct(),
+
+        doc = get_object_or_404(
+            docs,
             id=id,
         )
 
@@ -76,7 +80,7 @@ class DocumentVersionHandler(APIView):
             ).exists()
         )
 
-        if not is_owner:
+        if not is_owner and not request.user.is_superuser:
             versions = versions.exclude(status=VersionStatus.REJECTED)
 
         serializer = VersionSerializer(versions, many=True)
