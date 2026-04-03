@@ -62,7 +62,7 @@ class DocumentVersionHandler(APIView):
         else:
             docs = DocumentModel.objects.filter(
                 Q(created_by=request.user) | Q(document_permissions__user=request.user)
-            ).distinct(),
+            ).distinct()
 
         doc = get_object_or_404(
             docs,
@@ -88,12 +88,19 @@ class DocumentVersionHandler(APIView):
 
     def post(self, request, id):
 
-        doc = get_object_or_404(
-            DocumentModel.objects.filter(
+        if request.user.is_superuser:
+            docs = DocumentModel.objects.all()
+        else:
+            docs = DocumentModel.objects.filter(
                 Q(created_by=request.user) | Q(document_permissions__user=request.user)
-            ).distinct(),
+            ).distinct()
+
+        doc = get_object_or_404(
+            docs,
             id=id,
         )
+
+        print(doc)
 
         file_obj = request.FILES.get("file")
 
