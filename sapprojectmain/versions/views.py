@@ -168,16 +168,11 @@ class DocumentVersionHandler(APIView):
                 file_path=file_url,
                 file_size=file_obj.size,
                 checksum=checksum,
-                status=VersionStatus.PENDING,
+                status=VersionStatus.DRAFT,
                 created_by=request.user,
                 parent_version=last_v,
             )
-
-            ReviewModel.objects.create(
-                version=new_version,
-                review_status=ReviewStatus.PENDING,
-            )
-
+            
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
