@@ -15,6 +15,8 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
     )
     username = serializers.ReadOnlyField(source="user.username")
     document_title = serializers.ReadOnlyField(source="document.title")
+    full_name = serializers.SerializerMethodField()
+    user_avatar = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentPermissionModel
@@ -26,6 +28,8 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
             "document_title",
             "permission_type",
             "granted_at",
+            "full_name",
+            "user_avatar",
         ]
         read_only_fields = ["id", "granted_at"]
         # Disable the auto-generated unique_together validator so that
@@ -42,3 +46,13 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
         )
         instance._was_created = created
         return instance
+    
+    def get_full_name(self, obj):
+        if obj.user:
+            return f"{obj.user.first_name} {obj.user.last_name}".strip()
+        return ""
+
+    def get_user_avatar(self, obj):
+        if obj.user:
+            return obj.user.avatar
+        return ""

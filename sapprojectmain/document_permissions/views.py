@@ -93,8 +93,7 @@ class GetDocumentMembersView(generics.ListAPIView):
             if not is_member:
                 raise PermissionDenied()
 
-        return DocumentPermissionModel.objects.filter(document_id=doc_id)
-
+        return DocumentPermissionModel.objects.filter(document_id=doc_id) # .select_related("user")
 
 class GetAllDocumentPermissionsView(APIView):
     # Global permission list for dashboards
