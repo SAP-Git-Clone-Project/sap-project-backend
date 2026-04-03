@@ -11,6 +11,8 @@ class VersionSerializer(serializers.ModelSerializer):
 
     # NOTE: Provides owner ID to allow frontend to construct storage URLs
     document_owner_id = serializers.ReadOnlyField(source="document.created_by.id")
+    document_title = serializers.ReadOnlyField(source="document.title")
+    avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
 
     class Meta:
         model = VersionsModel
@@ -30,6 +32,8 @@ class VersionSerializer(serializers.ModelSerializer):
             "file_size",
             "checksum",
             "document_owner_id",
+            "document_title",
+            "avatar_url",
         ]
         # SECURITY: System-critical fields are protected from direct user modification
         read_only_fields = [

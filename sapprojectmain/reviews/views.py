@@ -1,3 +1,5 @@
+import traceback
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -7,10 +9,13 @@ from django.db import transaction
 # Model/Serializer Imports
 from .models import ReviewModel, ReviewStatus
 from .serializers import ReviewSerializer
-import versions.models as VersionsModel
+from versions.models import VersionsModel, VersionStatus
 from django.contrib.auth import get_user_model
-from core.permissions import IsReviewerForDocument
+from core.permissions import IsAuthenticatedUser, IsReviewerForDocument
 
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 class ReviewDetailView(APIView):
     permission_classes = [IsReviewerForDocument]
@@ -53,46 +58,63 @@ class ReviewDetailView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ReviewCreateView(APIView):
-    # permission_classes = [IsReviewerForDocument]
+    permission_classes = [IsAuthenticatedUser]
 
     def post(self, request):
-        version_id = request.data.get("version")
+        try:
+            version_id = request.data.get("version")
+            reviewer_id = request.data.get("reviewer")
 
-        if not version_id:
-            return Response(
-                {"error": "'version' is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        with transaction.atomic():
-            version = get_object_or_404(
-                VersionsModel, pk=version_id
-            )
-            # self.check_object_permissions(request, version)
-
-            if ReviewModel.objects.filter(
-                version=version,
-                review_status=ReviewStatus.PENDING,
-                reviewer=None,
-            ).exists():
+            if not version_id:
                 return Response(
-                    {"error": "Pending review already exists."},
+                    {"error": "'version' is required."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            review = ReviewModel.objects.create(
-                version=version,
-                review_status=ReviewStatus.PENDING,
-                reviewer=None,
+            if not reviewer_id:
+                return Response(
+                    {"error": "'reviewer' is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            reviewer = get_object_or_404(User, pk=reviewer_id)
+
+            with transaction.atomic():
+                version = get_object_or_404(VersionsModel, pk=version_id)
+
+                # Prevent duplicate pending review for same reviewer
+                if ReviewModel.objects.filter(
+                    version=version,
+                    review_status=ReviewStatus.PENDING,
+                    reviewer=reviewer,
+                ).exists():
+                    return Response(
+                        {"error": "This reviewer already has a pending review for this version."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Create review assigned to the selected reviewer
+                review = ReviewModel.objects.create(
+                    version=version,
+                    review_status=ReviewStatus.PENDING,
+                    reviewer=reviewer,
+                )
+
+                # Update version status
+                version.status = VersionStatus.PENDING
+                version.save()
+
+            return Response(
+                ReviewSerializer(review).data,
+                status=status.HTTP_201_CREATED,
             )
 
-            version.status = VersionsModel.VersionStatus.PENDING_APPROVAL
-            version.save()
-
-        return Response(
-            ReviewSerializer(review).data,
-            status=status.HTTP_201_CREATED,
-        )
+        except Exception as e:
+            traceback.print_exc()
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 class ReviewListView(APIView):
     permission_classes = [IsReviewerForDocument]
@@ -103,10 +125,7 @@ class ReviewListView(APIView):
         if user.is_staff or user.is_superuser:
             reviews = ReviewModel.objects.all()
         else:
-            reviews = ReviewModel.objects.filter(
-                version__document__document_permissions__user=user,
-                version__document__document_permissions__permission_type="APPROVE",
-            ).distinct()
+            reviews = ReviewModel.objects.filter(reviewer=user).select_related("version").distinct()
 
         # NOTE: Default to pending only, pass ?all=true for full history/audit
         if request.query_params.get("all") != "true":

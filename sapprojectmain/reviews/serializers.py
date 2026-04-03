@@ -7,11 +7,15 @@ from versions.models import VersionStatus
 
 class ReviewSerializer(serializers.ModelSerializer):
     # NOTE: Provides current and parent version data for frontend diffing
-    new_version = VersionSerializer(source="version", read_only=True)
-    old_version = VersionSerializer(source="version.parent_version", read_only=True)
+    # new_version = VersionSerializer(source="version", read_only=True)
+    new_version = serializers.SerializerMethodField()
+    old_version = serializers.SerializerMethodField()
+    reviewer_name = serializers.SerializerMethodField()
+
+    # old_version = VersionSerializer(source="version.parent_version", read_only=True)
 
     # NOTE: Read-only field for reviewer identification in the UI
-    reviewer_name = serializers.ReadOnlyField(source="reviewer.username")
+    # reviewer_name = serializers.ReadOnlyField(source="reviewer.username")
 
     class Meta:
         model = ReviewModel
@@ -28,6 +32,24 @@ class ReviewSerializer(serializers.ModelSerializer):
         ]
         # NOTE: System-managed fields excluded from direct user input
         read_only_fields = ["id", "reviewed_at", "reviewer", "version"]
+
+    def get_new_version(self, obj):
+        version = obj.version
+        if version:
+            try:
+                return VersionSerializer(version).data
+            except Exception:
+                return None
+        return None
+
+    def get_old_version(self, obj):
+        parent = obj.version.parent_version
+        if parent:
+            return VersionSerializer(parent).data
+        return None
+
+    def get_reviewer_name(self, obj):
+        return obj.reviewer.username if obj.reviewer else None
 
     def validate(self, data):
         # NOTE: Ensures rejection includes a mandatory explanatory comment
