@@ -146,5 +146,5 @@ class UserSearchSerializer(serializers.ModelSerializer):
     # NOTE: Returns minimal public info for user invitation search
     class Meta:
         model = UserModel
-        fields = ["id", "username", "email"]
+        fields = ["id", "username", "email", "first_name", "last_name", "avatar"]
         read_only_fields = ["id", "username", "email"]

@@ -7,6 +7,8 @@ from django.db import transaction
 # Model/Serializer Imports
 from .models import ReviewModel, ReviewStatus
 from .serializers import ReviewSerializer
+import versions.models as VersionsModel
+from django.contrib.auth import get_user_model
 from core.permissions import IsReviewerForDocument
 
 
@@ -50,6 +52,52 @@ class ReviewDetailView(APIView):
 
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+class ReviewCreateView(APIView):
+    permission_classes = [IsReviewerForDocument]
+
+    def post(self, request):
+        version_id = request.data.get("version")
+        reviewer_id = request.data.get("reviewer")
+
+        if not version_id or not reviewer_id:
+            return Response(
+                {"error": "Both 'version' and 'reviewer' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            version = get_object_or_404(
+                VersionsModel.VersionsModel, pk=version_id
+            )
+            reviewer = get_object_or_404(
+                get_user_model(), pk=reviewer_id
+            )
+
+            self.check_object_permissions(request, version)
+
+            if ReviewModel.objects.filter(
+                version=version,
+                reviewer=reviewer,
+                review_status=ReviewStatus.PENDING,
+            ).exists():
+                return Response(
+                    {"error": "Pending review already exists."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            review = ReviewModel.objects.create(
+                version=version,
+                reviewer=reviewer,
+                review_status=ReviewStatus.PENDING,
+            )
+
+            version.status = "pending_approval"
+            version.save()
+
+        return Response(
+            ReviewSerializer(review).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 class ReviewListView(APIView):
     permission_classes = [IsReviewerForDocument]
