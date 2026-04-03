@@ -1,6 +1,7 @@
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db.models import Q
 
 from core.permissions import (
     HasDocumentReadPermission,
@@ -92,11 +93,10 @@ class DocumentListCreateView(APIView):
             documents = DocumentModel.objects.active_documents()
         else:
             # SECURITY: Checks permission table across app boundaries
-            documents = (
-                DocumentModel.objects.visible_documents(user)
-                .filter(document_permissions__user=user)
-                .distinct()
-            )
+            documents = DocumentModel.objects.filter(
+                Q(document_permissions__user=user) |
+                Q(created_by=user)
+            ).distinct()
 
         documents = documents.order_by("-updated_at")
 
