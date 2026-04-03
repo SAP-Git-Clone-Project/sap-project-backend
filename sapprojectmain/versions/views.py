@@ -14,6 +14,9 @@ from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
+import magic
+from django.core.exceptions import ValidationError
+
 from .models import VersionsModel, VersionStatus
 from reviews.models import ReviewModel, ReviewStatus
 from documents.models import DocumentModel
@@ -58,6 +61,23 @@ class DocumentVersionHandler(APIView):
         if self.request.method == "GET":
             return [HasDocumentReadPermission()]
         return [HasDocumentWritePermission()]
+    
+    def validate_is_text_or_asset(self, file):
+        # Read the first 2048 bytes to identify the file
+        chunk = file.read(2048)
+        mime_type = magic.from_buffer(chunk, mime=True)
+        file.seek(0)  # IMPORTANT: Reset the file pointer for saving
+
+        allowed_mimes = [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'image/jpeg',
+            'image/png'
+        ]
+
+        if not (mime_type.startswith('text/') or mime_type in allowed_mimes or file.name.endswith('.doc') or file.name.endswith('.docx')):
+            raise ValidationError(f"Asset Security Breach: File type '{mime_type}' is not authorized.")
 
     def get(self, request, id):
         if request.user.is_superuser:
@@ -103,8 +123,6 @@ class DocumentVersionHandler(APIView):
             id=id,
         )
 
-        print(doc)
-
         file_obj = request.FILES.get("file")
 
         if not file_obj:
@@ -113,14 +131,8 @@ class DocumentVersionHandler(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # FIX 1: File type whitelist check before anything else
-        ext = file_obj.name.rsplit(".", 1)[-1].lower() if "." in file_obj.name else ""
-        if ext not in ALLOWED_EXTENSIONS:
-            return Response(
-                {"error": f"File type '.{ext}' is not allowed."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        self.validate_is_text_or_asset(file_obj)
+            
         # FIX 2: Validate serializer BEFORE uploading to Cloudinary
         serializer = VersionSerializer(data=request.data, context={"request": request})
         if not serializer.is_valid():
