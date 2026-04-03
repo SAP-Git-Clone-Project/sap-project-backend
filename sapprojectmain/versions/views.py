@@ -37,6 +37,9 @@ def generate_checksum(file):
 
 
 def get_authorized_version(user, pk):
+    if user.is_superuser:
+        return get_object_or_404(VersionsModel, pk=pk)
+    
     return get_object_or_404(
         VersionsModel.objects.filter(
             Q(document__created_by=user)
