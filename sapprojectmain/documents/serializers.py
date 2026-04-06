@@ -21,6 +21,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             "updated_at",
             "active_version",
             "versions",
+            "is_deleted",
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
