@@ -13,10 +13,10 @@ class NotificationModel(models.Model):
     )
 
     # NOTE: User who triggered the notification or System if null
-    actor = models.ForeignKey(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="actions_triggered",
+        related_name="notifications_triggered",  # Updated from actions_triggered
         null=True,
         blank=True,
     )
@@ -29,7 +29,10 @@ class NotificationModel(models.Model):
         "documents.DocumentModel", on_delete=models.CASCADE, null=True, blank=True
     )
 
+    # NOTE: Status tracking for the notification
     is_read = models.BooleanField(default=False)
+
+    # NOTE: Automatic timestamping for sorting and history
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -39,5 +42,5 @@ class NotificationModel(models.Model):
 
     def __str__(self):
         # NOTE: Formats notification for admin display
-        actor_name = self.actor.username if self.actor else "System"
-        return f"{actor_name} {self.verb} for {self.recipient}"
+        user_name = self.user.username if self.user else "System"
+        return f"{user_name} {self.verb} for {self.recipient}"

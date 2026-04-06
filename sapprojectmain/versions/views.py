@@ -14,7 +14,7 @@ from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
-import magic
+import puremagic as magic
 from django.core.exceptions import ValidationError
 
 from .models import VersionsModel, VersionStatus
@@ -65,7 +65,8 @@ class DocumentVersionHandler(APIView):
     def validate_is_text_or_asset(self, file):
         # Read the first 2048 bytes to identify the file
         chunk = file.read(2048)
-        mime_type = magic.from_buffer(chunk, mime=True)
+        results = magic.from_string(chunk)
+        mime_type = results[0].mime if results else "application/octet-stream"
         file.seek(0)  # IMPORTANT: Reset the file pointer for saving
 
         allowed_mimes = [
