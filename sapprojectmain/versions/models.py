@@ -50,9 +50,9 @@ class VersionsModel(models.Model):
     is_active = models.BooleanField(default=False)
 
     # NOTE: Storage metadata for Cloudinary and file integrity checks
-    file_path = models.URLField(max_length=500, blank=False, null=False)
-    file_size = models.BigIntegerField(blank=False, null=False)
-    checksum = models.CharField(max_length=255, blank=False, null=False)
+    file_path = models.URLField(max_length=500, blank=True, null=True)
+    file_size = models.BigIntegerField(blank=True, null=True)
+    checksum = models.CharField(max_length=255, null=True, blank=True)
 
     class Meta:
         db_table = "versions"
