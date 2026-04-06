@@ -137,22 +137,12 @@ class HasDocumentDeletePermission(BasePermission):
         if user.is_superuser:
             return True
 
-        # Grant endpoint — document comes from request body
-        doc_id = request.data.get("document")
+        kwargs = getattr(view, "kwargs", {})
 
-        # Revoke endpoint — document must be resolved via the permission UUID in the URL
-        if not doc_id:
-            permission_id = request.parser_context.get("kwargs", {}).get("id")
-            if permission_id:
-                perm = DocumentPermissionModel.objects.filter(
-                    id=permission_id
-                ).select_related("document").first()
-                if perm:
-                    doc_id = perm.document_id
-
-        # Resign endpoint — doc_id is directly in the URL
-        if not doc_id:
-            doc_id = request.parser_context.get("kwargs", {}).get("doc_id")
+        doc_id = (
+            request.data.get("document")
+            or kwargs.get("id")   # ✅ FIXED
+        )
 
         if not doc_id:
             return False

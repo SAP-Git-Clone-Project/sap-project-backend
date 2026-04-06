@@ -34,6 +34,8 @@ class DocumentDetailView(APIView):
     def get_object(self, id):
         # NOTE: Uses active_documents manager to exclude soft-deleted records
         try:
+            if self.request.user.is_superuser:
+                return DocumentModel.objects.all().get(pk=id)
             return DocumentModel.objects.active_documents().get(pk=id)
         except (DocumentModel.DoesNotExist, ValueError):
             return None
@@ -93,10 +95,7 @@ class DocumentListCreateView(APIView):
             documents = DocumentModel.objects.active_documents()
         else:
             # SECURITY: Checks permission table across app boundaries
-            documents = DocumentModel.objects.filter(
-                Q(document_permissions__user=user) |
-                Q(created_by=user)
-            ).distinct()
+            documents = DocumentModel.objects.visible_documents(user=user)
 
         documents = documents.order_by("-updated_at")
 

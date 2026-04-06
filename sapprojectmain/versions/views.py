@@ -43,11 +43,14 @@ def get_authorized_version(user, pk):
     if user.is_superuser:
         return get_object_or_404(VersionsModel, pk=pk)
     
+    base_qs = VersionsModel.objects.select_related("document")
+
     return get_object_or_404(
-        VersionsModel.objects.filter(
+        base_qs.filter(
             Q(document__created_by=user)
             | Q(document__document_permissions__user=user)
-            | Q(created_by=user)
+            | Q(created_by=user),
+            document__is_deleted=False,
         ).distinct(),
         pk=pk,
     )
@@ -91,6 +94,10 @@ class DocumentVersionHandler(APIView):
             docs,
             id=id,
         )
+
+        if not request.user.is_superuser:
+            if doc.is_deleted:
+                return Response({"detail": "You can't access a version associated with a deleted document"}, status=status.HTTP_404_NOT_FOUND)
 
         versions = VersionsModel.objects.filter(document=doc).order_by(
             "-version_number"
