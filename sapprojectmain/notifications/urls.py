@@ -3,17 +3,24 @@ from .views import (
     NotificationListView,
     MarkNotificationReadView,
     MarkAllReadView,
+    NotificationDeleteView,  # Added this
     HandleJoinRequestView,
 )
 
 urlpatterns = [
-    # NOTE: Fetch all notifications and unread count
+    # GET: Fetch paginated notifications (supports ?page=, ?status=, and ?q=)
     path("", NotificationListView.as_view(), name="notification-list"),
-    # NOTE: Mark a specific notification as read (manual or on click)
+    # PATCH: Mark a specific notification as read
     path("<uuid:pk>/read/", MarkNotificationReadView.as_view(), name="mark-read"),
-    # NOTE: Bulk update to clear all unread alerts
+    # DELETE: Purge a specific notification from the database
+    path(
+        "<uuid:pk>/delete/",
+        NotificationDeleteView.as_view(),
+        name="delete-notification",
+    ),
+    # POST: Bulk update to clear all unread alerts
     path("mark-all-read/", MarkAllReadView.as_view(), name="mark-all-read"),
-    # NOTE: Endpoint for 'Accept'/'Reject' buttons on join requests
+    # POST: Endpoint for 'Accept'/'Reject' buttons on join requests
     path(
         "<uuid:pk>/handle-request/",
         HandleJoinRequestView.as_view(),
