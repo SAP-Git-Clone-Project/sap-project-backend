@@ -92,6 +92,8 @@ class DocumentVersionHandler(APIView):
             or mime_type in allowed_mimes
             or file.name.endswith('.doc')
             or file.name.endswith('.docx')
+            or file.name.endswith('.pdf')
+            or file.name.endswith('.txt')
         ):
             raise ValidationError(
                 f"Asset Security Breach: File type '{mime_type}' is not authorized."

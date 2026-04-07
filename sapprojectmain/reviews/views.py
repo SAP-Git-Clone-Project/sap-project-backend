@@ -22,14 +22,18 @@ class ReviewDetailView(APIView):
     permission_classes = [IsReviewerForDocument]
 
     def get(self, request, pk):
-        # NOTE: GET review data including old and new versions for diffing
-        review = get_object_or_404(ReviewModel, pk=pk)
+        try:
+            # NOTE: GET review data including old and new versions for diffing
+            review = get_object_or_404(ReviewModel, pk=pk)
 
-        # SECURITY: Verifies user has specific approval rights for this document
-        self.check_object_permissions(request, review)
+            # SECURITY: Verifies user has specific approval rights for this document
+            self.check_object_permissions(request, review)
 
-        serializer = ReviewSerializer(review)
-        return Response(serializer.data)
+            serializer = ReviewSerializer(review)
+            return Response(serializer.data)
+        except Exception as e:
+            traceback.print_exc()
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def patch(self, request, pk):
         # NOTE: PATCH to finalize the review decision as approved or rejected
