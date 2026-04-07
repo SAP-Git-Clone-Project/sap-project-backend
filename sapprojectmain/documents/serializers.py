@@ -7,7 +7,6 @@ class DocumentSerializer(serializers.ModelSerializer):
     created_by_username = serializers.ReadOnlyField(source="created_by.username")
     created_by_avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
     active_version = serializers.SerializerMethodField()
-    versions = serializers.SerializerMethodField()
     
     class Meta:
         model = DocumentModel
@@ -20,7 +19,6 @@ class DocumentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "active_version",
-            "versions",
             "is_deleted",
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
@@ -49,6 +47,7 @@ class DocumentSerializer(serializers.ModelSerializer):
         # Fallback for anonymous users or no permissions
         return None
 
+    '''
     def get_versions(self, obj):
         """
         Return all versions if the request user is the creator,
@@ -62,7 +61,8 @@ class DocumentSerializer(serializers.ModelSerializer):
             active_version = obj.versions.filter(is_active=True).first()
             if active_version:
                 return [VersionSerializer(active_version).data]
-            return []    
+            return []
+    '''
 
     # Optional: title validation and creation/update logic
     def validate_title(self, value):
