@@ -67,23 +67,28 @@ class ReviewCreateView(APIView):
             reviewer_id = request.data.get("reviewer")
 
             if not version_id:
-                return Response(
-                    {"error": "'version' is required."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
+                return Response({"error": "'version' is required."}, status=status.HTTP_400_BAD_REQUEST)
             if not reviewer_id:
-                return Response(
-                    {"error": "'reviewer' is required."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"error": "'reviewer' is required."}, status=status.HTTP_400_BAD_REQUEST)
 
             reviewer = get_object_or_404(User, pk=reviewer_id)
 
             with transaction.atomic():
                 version = get_object_or_404(VersionsModel, pk=version_id)
 
-                # Prevent duplicate pending review for same reviewer
+                # SECURITY: Only users with APPROVE permission on this document can be reviewers
+                has_approve_permission = DocumentPermissionModel.objects.filter(
+                    user=reviewer,
+                    document=version.document,
+                    permission_type="APPROVE"
+                ).exists()
+
+                if not has_approve_permission and not request.user.is_superuser:
+                    return Response(
+                        {"error": "This user is not an authorized reviewer for this document."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
                 if ReviewModel.objects.filter(
                     version=version,
                     review_status=ReviewStatus.PENDING,
@@ -94,34 +99,21 @@ class ReviewCreateView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-                # Create review assigned to the selected reviewer
                 review = ReviewModel.objects.create(
                     version=version,
                     review_status=ReviewStatus.PENDING,
                     reviewer=reviewer,
                 )
 
-                DocumentPermissionModel.objects.update_or_create(
-                    user=reviewer,
-                    document=version.document,
-                    defaults={"permission_type": "APPROVE"},
-                )
-
-                # Update version status
+                # NOTE: Removed the auto-grant of APPROVE permission — must be pre-assigned
                 version.status = VersionStatus.PENDING
                 version.save()
 
-            return Response(
-                ReviewSerializer(review).data,
-                status=status.HTTP_201_CREATED,
-            )
+            return Response(ReviewSerializer(review).data, status=status.HTTP_201_CREATED)
 
         except Exception as e:
             traceback.print_exc()
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ReviewListView(APIView):
     permission_classes = [IsReviewerForDocument]
