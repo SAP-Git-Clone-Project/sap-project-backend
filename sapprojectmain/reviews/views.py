@@ -105,7 +105,6 @@ class ReviewCreateView(APIView):
                     reviewer=reviewer,
                 )
 
-                # NOTE: Removed the auto-grant of APPROVE permission — must be pre-assigned
                 version.status = VersionStatus.PENDING
                 version.save()
 
