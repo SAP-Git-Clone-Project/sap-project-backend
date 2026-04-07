@@ -96,7 +96,7 @@ def notify_of_new_version(sender, instance, created, **kwargs):
         # 2. Notify Reviewer if a review record exists for this version
         # We use .first() to get the most relevant review assignment
         review = (
-            ReviewModel.objects.filter(version=instance).order_by("-created_at").first()
+            ReviewModel.objects.filter(version=instance).order_by("-reviewed_at").first()
         )
 
         if review and review.reviewer:

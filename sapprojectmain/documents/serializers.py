@@ -42,7 +42,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             )
             if permission_qs.exists() or user.is_superuser or user == obj.created_by:
                 # Return the latest version regardless of is_active
-                latest_version = obj.versions.order_by("-created_at").last()
+                latest_version = obj.versions.order_by("-version_number").first()
                 if latest_version:
                     return VersionSerializer(latest_version).data
 

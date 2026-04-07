@@ -66,11 +66,18 @@ class DocumentVersionHandler(APIView):
         return [HasDocumentWritePermission()]
     
     def validate_is_text_or_asset(self, file):
-        # Read the first 2048 bytes to identify the file
-        chunk = file.read(2048)
-        results = magic.from_string(chunk)
-        mime_type = results[0].mime if results else "application/octet-stream"
-        file.seek(0)  # IMPORTANT: Reset the file pointer for saving
+        chunk = file.read(8192)
+
+        try:
+            matches = magic.magic_string(chunk)
+            mime_type = matches[0].mime_type if matches else None
+            if not mime_type:
+                # fall back to checking the file extension via puremagic
+                mime_type = magic.from_file(file.name)
+        except Exception:
+            mime_type = "application/octet-stream"
+
+        file.seek(0)
 
         allowed_mimes = [
             'application/pdf',
@@ -80,8 +87,15 @@ class DocumentVersionHandler(APIView):
             'image/png'
         ]
 
-        if not (mime_type.startswith('text/') or mime_type in allowed_mimes or file.name.endswith('.doc') or file.name.endswith('.docx')):
-            raise ValidationError(f"Asset Security Breach: File type '{mime_type}' is not authorized.")
+        if not (
+            mime_type.startswith('text/')
+            or mime_type in allowed_mimes
+            or file.name.endswith('.doc')
+            or file.name.endswith('.docx')
+        ):
+            raise ValidationError(
+                f"Asset Security Breach: File type '{mime_type}' is not authorized."
+            )
 
     def get(self, request, id):
         if request.user.is_superuser:
@@ -118,74 +132,75 @@ class DocumentVersionHandler(APIView):
         return Response(serializer.data)
 
     def post(self, request, id):
-
-        if request.user.is_superuser:
-            docs = DocumentModel.objects.all()
-        else:
-            docs = DocumentModel.objects.filter(
-                Q(created_by=request.user) | Q(document_permissions__user=request.user)
-            ).distinct()
-
-        doc = get_object_or_404(
-            docs,
-            id=id,
-        )
-
-        file_obj = request.FILES.get("file")
-
-        if not file_obj:
-            return Response(
-                {"error": "No file uploaded"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        self.validate_is_text_or_asset(file_obj)
-            
-        # FIX 2: Validate serializer BEFORE uploading to Cloudinary
-        serializer = VersionSerializer(data=request.data, context={"request": request})
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        checksum = generate_checksum(file_obj)
-
-        last_v = (
-            VersionsModel.objects.filter(document=doc).order_by("version_number").last()
-        )
-
-        new_version_number = (last_v.version_number + 1) if last_v else 1
-
-        folder_path = f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
-
         try:
-            upload_result = cloudinary.uploader.upload(
-                file_obj,
-                folder=folder_path,
-                resource_type="auto",
-            )
-            file_url = upload_result.get("secure_url")
-        except Exception as e:
-            return Response(
-                {"error": f"Cloudinary error: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            if request.user.is_superuser:
+                docs = DocumentModel.objects.all()
+            else:
+                docs = DocumentModel.objects.filter(
+                    Q(created_by=request.user) | Q(document_permissions__user=request.user)
+                ).distinct()
+
+            doc = get_object_or_404(
+                docs,
+                id=id,
             )
 
-        with transaction.atomic():
-            new_version = serializer.save(
-                document=doc,
-                version_number=new_version_number,
-                file_path=file_url,
-                file_size=file_obj.size,
-                checksum=checksum,
-                status=VersionStatus.DRAFT,
-                created_by=request.user,
-                parent_version=last_v,
+            file_obj = request.FILES.get("file")
+
+            if not file_obj:
+                return Response(
+                    {"error": "No file uploaded"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            self.validate_is_text_or_asset(file_obj)
+                
+            serializer = VersionSerializer(data=request.data, context={"request": request})
+            if not serializer.is_valid():
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            checksum = generate_checksum(file_obj)
+
+            last_v = (
+                VersionsModel.objects.filter(document=doc).order_by("version_number").last()
             )
-            
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+            new_version_number = (last_v.version_number + 1) if last_v else 1
+
+            folder_path = f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
+
+            try:
+                upload_result = cloudinary.uploader.upload(
+                    file_obj,
+                    folder=folder_path,
+                    resource_type="auto",
+                )
+                file_url = upload_result.get("secure_url")
+            except Exception as e:
+                return Response(
+                    {"error": f"Cloudinary error: {str(e)}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            with transaction.atomic():
+                new_version = serializer.save(
+                    document=doc,
+                    version_number=new_version_number,
+                    file_path=file_url,
+                    file_size=file_obj.size,
+                    checksum=checksum,
+                    status=VersionStatus.DRAFT,
+                    created_by=request.user,
+                    parent_version=last_v,
+                )
+                
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+        except Exception as ve:
+            print(ve)
 
 
 class VersionDetailView(APIView):
-    # FIX 3: Correct permission per method — readers cannot PATCH
     def get_permissions(self):
         if self.request.method in ["GET", "HEAD", "OPTIONS"]:
             return [HasDocumentReadPermission()]
