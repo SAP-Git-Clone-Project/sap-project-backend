@@ -9,7 +9,9 @@ from django.contrib.auth.signals import user_logged_in, user_logged_out
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.permissions import IsAuthenticated
-
+from rest_framework.pagination import PageNumberPagination
+from django.db.models import Q
+from django.contrib.auth.hashers import check_password
 from audit_log.middleware import get_current_ip
 from audit_log.models import AuditLogModel
 
@@ -21,10 +23,12 @@ from .serializers import (
     UserSearchSerializer,
 )
 from document_permissions.models import DocumentPermissionModel
-from django.db.models import Q
 
 # NOTE: Custom permission classes for access control
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser
+
+
+import json
 
 User = get_user_model()
 
@@ -79,7 +83,7 @@ class LoginView(APIView):
 
 class LogoutView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticatedUser] 
+    permission_classes = [IsAuthenticatedUser]
 
     def post(self, request):
         try:
@@ -102,7 +106,7 @@ class LogoutView(APIView):
         except Exception as e:
             print("ERROR:", str(e))
             return Response({"detail": "Invalid token."}, status=400)
-        
+
 
 # --- 2. USER DISCOVERY ---
 
@@ -122,14 +126,98 @@ class UserSearchView(generics.ListAPIView):
 # --- 3. ADMIN & STAFF ACTIONS ---
 
 
-class UserListView(APIView):
-    permission_classes = [IsStaffOrSuperUser]
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
 
-    def get(self, request):
-        # NOTE: GET list of all users for staff members
-        users = UserModel.objects.all()
-        serializer = UserSerializer(users, many=True)
-        return Response(serializer.data)
+
+class UserListDestroyView(generics.ListCreateAPIView):
+    queryset = UserModel.objects.all().order_by("-created_at")
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        search = self.request.query_params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(username__icontains=search) | Q(email__icontains=search)
+            )
+
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            val = is_active.lower() == "true"
+            queryset = queryset.filter(is_active=val)
+
+        start_date = self.request.query_params.get("start_date")
+        end_date = self.request.query_params.get("end_date")
+
+        if start_date:
+            queryset = queryset.filter(created_at__date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(created_at__date__lte=end_date)
+
+        return queryset
+
+    def get_serializer_context(self):
+        return {"request": self.request}
+
+
+class AdminDeleteUserView(APIView):
+    permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]
+
+    def delete(self, request, id):
+        # --- PASSWORD EXTRACTION ---
+        password = request.data.get("password")
+        if not password:
+            try:
+                password = json.loads(request.body).get("password")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+        if not password:
+            return Response(
+                {"error": "Admin password is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not request.user.check_password(password):
+            return Response(
+                {"error": "Invalid credentials. Termination aborted."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        # ---------------------------
+
+        current_user = request.user
+        user_to_delete = get_object_or_404(UserModel, pk=id)
+
+        if current_user == user_to_delete:
+            return Response(
+                {"error": "You cannot delete your own account from this panel."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if current_user.is_superuser:
+            if user_to_delete.is_superuser:
+                return Response(
+                    {"error": "Superusers cannot delete other superusers."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        elif current_user.is_staff:
+            if user_to_delete.is_superuser or user_to_delete.is_staff:
+                return Response(
+                    {"error": "Admins cannot delete other management accounts."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        OutstandingToken.objects.filter(user=user_to_delete).delete()
+        user_to_delete.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ToggleUserView(APIView):
@@ -138,20 +226,33 @@ class ToggleUserView(APIView):
     def patch(self, request, id):
         # NOTE: PATCH to enable or disable a user account
         user = get_object_or_404(UserModel, pk=id)
+        current_user = request.user
 
-        # SECURITY: Prevents non-superusers from deactivating superuser accounts
-        if user == request.user:
+        # SECURITY: Prevents users from deactivating their own accounts
+        if user == current_user:
             return Response(
                 {"detail": "You cannot deactivate your own account."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if user.is_superuser and not request.user.is_superuser:
-            return Response(
-                {"detail": "Staff cannot modify Superusers."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # HIERARCHY LOGIC:
+        # 1. Superuser logic: Can toggle anyone EXCEPT other Superusers
+        if current_user.is_superuser:
+            if user.is_superuser:
+                return Response(
+                    {"detail": "Superusers cannot modify other Superusers."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
+        # 2. Staff (Admin) logic: Cannot toggle Superusers OR other Staff members
+        elif current_user.is_staff:
+            if user.is_superuser or user.is_staff:
+                return Response(
+                    {"detail": "Admins cannot modify other Admins or Superusers."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Perform the toggle
         user.is_active = not user.is_active
         user.save()
         return Response({"is_active": user.is_active})

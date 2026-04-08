@@ -18,7 +18,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
     # Enable Server-Side Search (Standard DRF Search)
     filter_backends = [filters.SearchFilter]
-    search_fields = ["user__username", "action_type", "document__title", "description"]
+    search_fields = ["user__username", "user__email", "action_type", "document__title", "description"]
 
     def get_queryset(self):
         # Start with the base queryset

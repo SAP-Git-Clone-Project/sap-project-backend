@@ -44,6 +44,16 @@ def log_user_changes(sender, instance, created, update_fields, **kwargs):
     )
 
 
+@receiver(post_delete, sender=User)
+def log_user_deletion(sender, instance, **kwargs):
+    # SECURITY: Critical log — user FK will be NULL since the user is gone
+    AuditLogModel.objects.create(
+        action_type="delete user",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=f"User permanently deleted: {instance.email} (ID: {instance.id})",
+    )
+
+
 @receiver(user_logged_in)
 def log_login(sender, user, **kwargs):
     # Capture the login event. Ensure your Serializer triggers this for JWT!
@@ -92,7 +102,7 @@ def log_doc_deletion(sender, instance, **kwargs):
     # SECURITY: Critical log entry for permanent data removal from the system
     AuditLogModel.objects.create(
         action_type="delete document",
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=f"Document permanently deleted: '{instance.title}' (ID: {instance.id})",
     )
 
@@ -110,11 +120,34 @@ def log_permission_change(sender, instance, created, **kwargs):
         user=granter,
         document=instance.document,
         action_type="update metadata",
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=(
             f"User {granter.email} (ID: {granter.id}) {action_str} '{instance.permission_type}' "
             f"access to User {instance.user.email} (ID: {instance.user.id}) "
             f"for document: '{instance.document.title}' (ID: {instance.document.id})"
+        ),
+    )
+
+
+@receiver(post_delete, sender=DocumentPermissionModel)
+def log_permission_revoke(sender, instance, **kwargs):
+    # SECURITY: When a document is cascade-deleted, its permissions go too —
+    # instance.document may already be gone, so we guard against that.
+    try:
+        granter = instance.document.created_by
+        actor = f"User {granter.email} (ID: {granter.id}) revoked"
+        doc_info = f"for document: '{instance.document.title}' (ID: {instance.document.id})"
+    except Exception:
+        actor = "System revoked"
+        doc_info = "— document no longer exists (cascade deletion)"
+
+    AuditLogModel.objects.create(
+        action_type="update metadata",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=(
+            f"{actor} '{instance.permission_type}' access "
+            f"from User {instance.user.email} (ID: {instance.user.id}) "
+            f"{doc_info}"
         ),
     )
 
@@ -134,13 +167,26 @@ def log_version_activity(sender, instance, created, **kwargs):
             document=instance.document,
             version=instance,
             action_type="create version",
-            ip_address=get_current_ip(),
+            ip_address=get_current_ip() or "0.0.0.0",
             description=(
                 f"User {instance.created_by.email} (ID: {instance.created_by.id}) uploaded "
                 f"version {instance.version_number} (ID: {instance.id}) "
                 f"for document: '{instance.document.title}' (ID: {instance.document.id})"
             ),
         )
+
+
+@receiver(post_delete, sender=VersionsModel)
+def log_version_deletion(sender, instance, **kwargs):
+    # IMP: Version FK will be NULL in the log since it's already deleted
+    AuditLogModel.objects.create(
+        action_type="delete version",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=(
+            f"Version {instance.version_number} (ID: {instance.id}) permanently deleted "
+            f"from document: '{instance.document.title}' (ID: {instance.document.id})"
+        ),
+    )
 
 
 # --- 5. REVIEW LOGS ---
@@ -165,7 +211,7 @@ def log_review_activity(sender, instance, created, **kwargs):
         document=instance.version.document,
         version=instance.version,
         action_type=action,
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=(
             f"Reviewer {instance.reviewer.email} (ID: {instance.reviewer.id}) {instance.review_status} "
             f"version {instance.version.version_number} (ID: {instance.version.id}) "
