@@ -14,6 +14,8 @@ from django.db.models import Q
 from django.contrib.auth.hashers import check_password
 from audit_log.middleware import get_current_ip
 from audit_log.models import AuditLogModel
+from django.contrib.auth import authenticate  # ADD THIS
+from rest_framework.exceptions import AuthenticationFailed
 
 from .models import UserModel
 from .serializers import (
@@ -25,7 +27,7 @@ from .serializers import (
 from document_permissions.models import DocumentPermissionModel
 
 # NOTE: Custom permission classes for access control
-from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser
+from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUser
 
 
 import json
@@ -165,6 +167,54 @@ class UserListDestroyView(generics.ListCreateAPIView):
     def get_serializer_context(self):
         return {"request": self.request}
 
+
+class UserAdminToggleView(generics.GenericAPIView):
+    queryset = UserModel.objects.all()
+    permission_classes = [IsAuthenticatedUser, IsSuperUser]
+    lookup_field = "id"
+
+    def post(self, request, *args, **kwargs):
+        user_to_toggle = self.get_object()
+        requester = request.user
+        password = request.data.get("password")
+
+        # 1. Password Verification (Using check_password like your delete view)
+        if not password:
+            return Response(
+                {"detail": "Password is required to change admin status."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not requester.check_password(password):
+            return Response(
+                {"error": "Invalid credentials. Action denied."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # 2. Safety Check
+        if user_to_toggle == requester:
+            return Response(
+                {"detail": "You cannot change your own admin status through this endpoint."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3. Toggle Logic
+        requested_status = request.data.get("is_staff")
+        if requested_status is not None:
+            user_to_toggle.is_staff = str(requested_status).lower() == "true"
+        else:
+            user_to_toggle.is_staff = not user_to_toggle.is_staff
+
+        user_to_toggle.save()
+
+        return Response(
+            {
+                "username": user_to_toggle.username,
+                "is_staff": user_to_toggle.is_staff,
+                "message": f"Successfully updated admin status for {user_to_toggle.username}.",
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class AdminDeleteUserView(APIView):
     permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]

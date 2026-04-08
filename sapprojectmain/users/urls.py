@@ -9,6 +9,7 @@ from .views import (
     CurrentUserDetailView,
     ToggleUserView,
     AdminDeleteUserView,
+    UserAdminToggleView,
 )
 
 urlpatterns = [
@@ -33,5 +34,11 @@ urlpatterns = [
         "<uuid:id>/admin-delete/",
         AdminDeleteUserView.as_view(),
         name="admin-delete-user",
+    ),
+    # NOTE: POST to toggle user admin status for role management
+    path(
+        "<uuid:id>/toggle-admin/", 
+        UserAdminToggleView.as_view(), 
+        name="user-toggle-admin"
     ),
 ]
