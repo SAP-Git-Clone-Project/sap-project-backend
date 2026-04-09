@@ -21,6 +21,7 @@ from .models import VersionsModel, VersionStatus
 from reviews.models import ReviewModel, ReviewStatus
 from documents.models import DocumentModel
 from .serializers import VersionSerializer
+import traceback
 
 from core.permissions import (
     HasDocumentReadPermission,
@@ -28,6 +29,9 @@ from core.permissions import (
     IsAuthenticatedUser,
 )
 from rest_framework.permissions import IsAuthenticated
+
+from django.contrib.auth import get_user_model
+User = get_user_model()
 
 
 def generate_checksum(file):
@@ -370,3 +374,50 @@ class VersionExportView(APIView):
             {"error": "Invalid format. Use 'pdf' or 'txt'."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+class VersionInheritedReviewersView(APIView):
+    def get(self, request, pk):
+        version_id = pk
+        print(f"DEBUG: Fetching reviewers for version {version_id}")
+
+        try:
+            version = get_object_or_404(VersionsModel, pk=version_id)
+
+            reviewer_ids = self.get_inherited_reviewers(version)
+
+            users = User.objects.filter(id__in=reviewer_ids)
+
+            return Response([
+                {
+                    "id": u.id,
+                    "username": u.username,
+                }
+                for u in users
+            ])
+        
+        except Exception as e:
+            print(traceback.format_exc())
+            print(e)
+            return Response({"error": str(e)}, status=500)
+    
+    def get_inherited_reviewers(self, version):
+        visited = set()
+        reviewers = set()
+
+        current = version.parent_version
+
+        while current:
+            if current.id in visited:
+                break
+            visited.add(current.id)
+
+            # get reviewers from this version
+            version_reviewers = ReviewModel.objects.filter(
+                version=current
+            ).values_list("reviewer", flat=True)
+
+            reviewers.update(version_reviewers)
+
+            current = current.parent_version
+
+        return reviewers
