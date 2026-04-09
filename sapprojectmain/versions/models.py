@@ -7,7 +7,7 @@ from django.db import transaction
 class VersionStatus(models.TextChoices):
     # NOTE: Defines the lifecycle states of a document version
     DRAFT = "draft", "Draft"
-    PENDING = "pending_approval", "Pending Approval"
+    PENDING = "pending", "Pending"
     APPROVED = "approved", "Approved"
     REJECTED = "rejected", "Rejected"
 
