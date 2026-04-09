@@ -1,5 +1,6 @@
 from rest_framework.permissions import BasePermission, IsAuthenticated, SAFE_METHODS
 from document_permissions.models import DocumentPermissionModel
+from django.db.models import Q
 
 # --- SYSTEM PERMISSIONS (User Management) ---
 
@@ -102,10 +103,28 @@ class HasDocumentReadPermission(BasePermission):
         if hasattr(obj, "created_by") and obj.created_by == user:
             return True
 
-        doc = obj if hasattr(obj, "document_permissions") else getattr(obj, "document", None)
+        # Determine if we are looking at a Document or a Version
+        doc = None
+        target_version = None
+
+        if hasattr(obj, "document_permissions"):  # It's a DocumentModel
+            doc = obj
+            target_version = None
+        elif hasattr(obj, "document"):  # It's a VersionModel
+            doc = obj.document
+            target_version = obj
 
         if doc:
-            return doc.document_permissions.filter(user=user).exists()
+            permission_query = Q(user=user)
+            
+            if target_version:
+                # If viewing a version, allow if global OR version-specific
+                permission_query &= (Q(version=target_version) | Q(version__isnull=True))
+            else:
+                # If viewing the document root, only global permissions count
+                permission_query &= Q(version__isnull=True)
+
+            return doc.document_permissions.filter(permission_query).exists()
 
         return False
 
@@ -203,5 +222,5 @@ class HasDocumentWritePermission(BasePermission):
         if user.is_superuser:
             return True
         return obj.document_permissions.filter(
-            user=user, permission_type="WRITE"
+            user=user, permission_type="WRITE", version_isnull=True
         ).exists()

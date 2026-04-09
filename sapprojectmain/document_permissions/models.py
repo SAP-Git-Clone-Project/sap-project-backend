@@ -3,6 +3,7 @@ from django.db import models
 from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from documents.models import DocumentModel
+from versions.models import VersionsModel
 
 
 # DOCUMENT PERMISSIONS MODEL DEFINITION
@@ -28,6 +29,10 @@ class DocumentPermissionModel(models.Model):
         DocumentModel, on_delete=models.CASCADE, related_name="document_permissions"
     )
 
+    version = models.ForeignKey(
+        VersionsModel, on_delete=models.CASCADE, null=True, blank=True, related_name="version_permissions"
+    )
+
     permission_type = models.CharField(
         max_length=16, choices=PermissionType.choices, default=PermissionType.READ
     )
@@ -42,7 +47,7 @@ class DocumentPermissionModel(models.Model):
         # SECURITY: Prevent duplicate permission entries for the same user-document pair
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "document"], name="unique_user_document_permission"
+                fields=["user", "document", "version"], name="unique_user_document_permission"
             )
         ]
         # PERFORMANCE: Indexing frequently queried fields to speed up access checks

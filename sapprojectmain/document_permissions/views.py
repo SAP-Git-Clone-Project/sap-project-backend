@@ -2,6 +2,8 @@ from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
+from django.db.models import Q
+import traceback
 
 from core.permissions import (
     HasDocumentWritePermission,
@@ -82,18 +84,35 @@ class GetDocumentMembersView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get_queryset(self):
-        # Map URL variable doc_id to model field document_id
-        doc_id = self.kwargs.get("doc_id")
-        user = self.request.user
+        try:
+            # Map URL variable doc_id to model field document_id
+            doc_id = self.kwargs.get("doc_id")
+            user = self.request.user
 
-        if not user.is_staff and not user.is_superuser:
-            is_member = DocumentPermissionModel.objects.filter(
-                user=user, document_id=doc_id
-            ).exists()
-            if not is_member:
-                raise PermissionDenied()
+            base_query = DocumentPermissionModel.objects.filter(
+                Q(document_id=doc_id) | Q(version_id=doc_id)
+            ).select_related("user", "document")
 
-        return DocumentPermissionModel.objects.filter(document_id=doc_id) # .select_related("user")
+            if not user.is_staff and not user.is_superuser:
+                is_member = base_query.filter(user=user).exists()
+                if not is_member:
+                    raise PermissionDenied()
+
+            try:
+                # Converting to a list forces the database query and 
+                # helps reveal errors before the renderer starts
+                list(base_query) 
+            except Exception as e:
+                print("--- DATABASE ERROR ---")
+                traceback.print_exc()
+                raise ValueError({"error": "Database query failed"})
+
+            # return DocumentPermissionModel.objects.filter(document_id=doc_id) # .select_related("user")
+            return base_query
+        except Exception as e:
+            traceback.print_exc()
+            raise PermissionDenied()
+
 
 class GetAllDocumentPermissionsView(APIView):
     # Global permission list for dashboards

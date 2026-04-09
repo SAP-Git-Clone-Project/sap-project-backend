@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from .models import DocumentPermissionModel
+from versions.models import VersionsModel
+from documents.models import DocumentModel
 
 User = get_user_model()
 
@@ -9,9 +11,17 @@ User = get_user_model()
 class DocumentPermissionSerializer(serializers.ModelSerializer):
     user = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     document = serializers.PrimaryKeyRelatedField(
-        queryset=DocumentPermissionModel._meta.get_field(
-            "document"
-        ).remote_field.model.objects.all()
+        # queryset=DocumentPermissionModel._meta.get_field(
+        #    "document"
+        # ).remote_field.model.objects.all()
+        queryset=DocumentModel.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    version = serializers.PrimaryKeyRelatedField(
+        queryset=VersionsModel.objects.all(), 
+        required=False, 
+        allow_null=True
     )
     username = serializers.ReadOnlyField(source="user.username")
     document_title = serializers.ReadOnlyField(source="document.title")
@@ -25,6 +35,7 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
             "user",
             "username",
             "document",
+            "version",
             "document_title",
             "permission_type",
             "granted_at",
@@ -39,10 +50,11 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = validated_data.pop("user")
         document = validated_data.pop("document")
+        version = validated_data.pop("version", None)
         permission_type = validated_data.get("permission_type")
 
         instance, created = DocumentPermissionModel.objects.update_or_create(
-            user=user, document=document, defaults={"permission_type": permission_type}
+            user=user, document=document, version=version, defaults={"permission_type": permission_type}
         )
         instance._was_created = created
         return instance

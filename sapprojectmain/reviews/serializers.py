@@ -11,6 +11,7 @@ class ReviewSerializer(serializers.ModelSerializer):
     new_version = serializers.SerializerMethodField()
     old_version = serializers.SerializerMethodField()
     reviewer_name = serializers.SerializerMethodField()
+    reviewer_avatar = serializers.SerializerMethodField()
 
     # old_version = VersionSerializer(source="version.parent_version", read_only=True)
 
@@ -24,6 +25,7 @@ class ReviewSerializer(serializers.ModelSerializer):
             "version",
             "reviewer",
             "reviewer_name",
+            "reviewer_avatar",
             "review_status",
             "comments",
             "reviewed_at",
@@ -50,6 +52,9 @@ class ReviewSerializer(serializers.ModelSerializer):
 
     def get_reviewer_name(self, obj):
         return obj.reviewer.username if obj.reviewer else None
+    
+    def get_reviewer_avatar(self, obj):
+        return obj.reviewer.avatar if obj.reviewer else None
 
     def validate(self, data):
         # NOTE: Ensures rejection includes a mandatory explanatory comment

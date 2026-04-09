@@ -26,9 +26,12 @@ class DocumentManager(models.Manager):
         return self.get_queryset().active()
     
     def visible_documents(self, user):
-        active_version = VersionsModel.objects.filter(document=models.OuterRef("pk"), is_active=True)
+        from document_permissions.models import DocumentPermissionModel
 
-        return self.active_documents().annotate(has_active_version=models.Exists(active_version)).filter(Q(created_by=user) | Q(has_active_version=True)).active()
+        active_version = VersionsModel.objects.filter(document=models.OuterRef("pk"), is_active=True)
+        has_permission = DocumentPermissionModel.objects.filter(document=models.OuterRef("pk"), user=user)
+
+        return self.active_documents().annotate(has_active_version=models.Exists(active_version), user_has_permission=models.Exists(has_permission)).filter(Q(created_by=user) | Q(has_active_version=True) | Q(user_has_permission=True)).distinct()
 
     def create_document(self, created_by, title, **extra_fields):
         # NOTE: Handles document creation and initial owner permissions
