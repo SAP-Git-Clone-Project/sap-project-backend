@@ -43,9 +43,10 @@ class CreateDocumentPermissionView(generics.CreateAPIView):
 
 
 class DeleteDocumentPermissionView(generics.DestroyAPIView):
-    # Revoke access for a specific user
-    # Target row using its specific permission UUID
-    queryset = DocumentPermissionModel.objects.all()
+    # Revoke access for a specific user on either a document or a version.
+    # Target row using its specific permission UUID (lookup_field = "id").
+    # The queryset spans both document-level and version-level permission rows
+    # so a single UUID resolves correctly regardless of which context it belongs to.
     serializer_class = DocumentPermissionSerializer
     lookup_field = "id"
     # Requires DELETE level permission or Staff status
@@ -54,19 +55,31 @@ class DeleteDocumentPermissionView(generics.DestroyAPIView):
         HasDocumentDeletePermission | IsStaffOrSuperUser,
     ]
 
+    def get_queryset(self):
+        # Include both document-scoped and version-scoped permission rows.
+        # Filtering by both non-null paths keeps the queryset explicit and
+        # avoids accidentally exposing unrelated permission records.
+        return DocumentPermissionModel.objects.filter(
+            Q(document__isnull=False) | Q(version__isnull=False)
+        ).select_related("user", "document", "version")
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
 
-        # Primary creator cannot be revoked unless by Superuser
-        if instance.permission_type == "DELETE":
-            if (
-                instance.document.created_by == instance.user
-                and not request.user.is_superuser
-            ):
-                return Response(
-                    {"detail": "Cannot revoke the primary owner's permissions"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        # The primary-owner guard only applies to document-level DELETE permissions.
+        # Version-level rows never carry a DELETE permission_type and have no
+        # meaningful "created_by" concept, so we skip the check for them entirely.
+        is_document_permission = instance.document is not None
+        if (
+            is_document_permission
+            and instance.permission_type == "DELETE"
+            and instance.document.created_by == instance.user
+            and not request.user.is_superuser
+        ):
+            return Response(
+                {"detail": "Cannot revoke the primary owner's permissions"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         instance.delete()
         return Response(
@@ -99,15 +112,14 @@ class GetDocumentMembersView(generics.ListAPIView):
                     raise PermissionDenied()
 
             try:
-                # Converting to a list forces the database query and 
+                # Converting to a list forces the database query and
                 # helps reveal errors before the renderer starts
-                list(base_query) 
+                list(base_query)
             except Exception as e:
                 print("--- DATABASE ERROR ---")
                 traceback.print_exc()
                 raise ValueError({"error": "Database query failed"})
 
-            # return DocumentPermissionModel.objects.filter(document_id=doc_id) # .select_related("user")
             return base_query
         except Exception as e:
             traceback.print_exc()
@@ -167,7 +179,7 @@ class RejectDocumentPermissionView(APIView):
             return Response(
                 {"detail": "You do not have permissions for this document"}, status=status.HTTP_404_NOT_FOUND
             )
-        
+
         if (
             permission.permission_type == "DELETE"
             and permission.document.created_by == request.user
