@@ -6,6 +6,7 @@ from .views import (
     GetAllDocumentPermissionsView,
     GetDocumentMembersView,
     RejectDocumentPermissionView,
+    CreatePermissionRequestView,
 )
 
 # URL CONFIGURATION FOR DOCUMENT ACCESS CONTROL
@@ -14,6 +15,7 @@ urlpatterns = [
     path("", GetAllDocumentPermissionsView.as_view(), name="permission-list"),
     # IMP: The entry point for inviting users or granting new access levels
     path("grant/", CreateDocumentPermissionView.as_view(), name="permission-grant"),
+    path("request/", CreatePermissionRequestView.as_view(), name="permission-request"),
     # NOTE: Retrieves all members currently assigned to a specific document or version ID.
     # The same GetDocumentMembersView handles both — it already queries by
     # Q(document_id=doc_id) | Q(version_id=doc_id), so passing a version UUID

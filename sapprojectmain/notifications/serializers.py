@@ -15,6 +15,7 @@ class NotificationSerializer(serializers.ModelSerializer):
 
     # NOTE: Calculated field for relative time display like "2 mins ago"
     created_since = serializers.SerializerMethodField()
+    permission = serializers.SerializerMethodField()
 
     class Meta:
         model = NotificationModel
@@ -28,6 +29,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "is_read",
             "created_at",
             "created_since",
+            "permission",
         ]
         # NOTE: System-managed fields excluded from user input
         read_only_fields = ["id", "created_at", "created_since"]
@@ -48,3 +50,12 @@ class NotificationSerializer(serializers.ModelSerializer):
             return f"{time_str} ago"
         except Exception:
             return "Recently"
+        
+    def get_permission(self, obj):
+        if not obj.permission_request:
+            return None
+
+        return {
+            "id": obj.permission_request.id,
+            "status": obj.permission_request.status,
+        }

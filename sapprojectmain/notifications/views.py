@@ -1,12 +1,13 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.views import APIView
+from rest_framework.views import APIView, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from .models import NotificationModel
 from .serializers import NotificationSerializer
+from document_permissions.models import DocumentPermissionModel
 
 # 1. Custom Pagination with unread counts
 class NotificationPagination(PageNumberPagination):
@@ -37,7 +38,7 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        
+            
         # FIXED: Changed 'order_at' to 'order_by'
         # ADDED: 'select_related' to fetch document and user data in ONE query
         queryset = NotificationModel.objects.filter(recipient=user).select_related(
@@ -51,7 +52,7 @@ class NotificationListView(generics.ListAPIView):
         elif status_filter == "read":
             queryset = queryset.filter(is_read=True)
 
-        # Handle Search
+            # Handle Search
         search_query = self.request.query_params.get("q")
         if search_query:
             # FIXED: Changed 'target_document_title' to 'target_document__title'
@@ -63,7 +64,7 @@ class NotificationListView(generics.ListAPIView):
             )
 
         return queryset
-
+        
 # 3. Mark specific notification as read
 class MarkNotificationReadView(generics.UpdateAPIView):
     serializer_class = NotificationSerializer
@@ -106,28 +107,38 @@ class HandleJoinRequestView(APIView):
         notification = get_object_or_404(
             NotificationModel, pk=pk, recipient=request.user
         )
-        action = request.data.get("action")
-        
-        # Safely extract permission ID from the JSON data field
-        data = notification.data if isinstance(notification.data, dict) else {}
-        permission_id = data.get("permission_id")
 
-        if not permission_id:
-            return Response(
-                {"error": "No permission ID found"}, status=status.HTTP_400_BAD_REQUEST
-            )
+        action = request.data.get("action")
+        req = notification.permission_request
+
+        if not req:
+            return Response({"error": "No request found"}, status=400)
+
+        if req.user != request.user:
+            raise PermissionDenied("Not your request")
+
+        if req.status != "PENDING":
+            return Response({"detail": "Already handled"}, status=400)
 
         if action == "accept":
-            notification.verb = "You accepted the invitation for"
-            msg = "Invitation accepted"
-        elif action == "reject":
-            notification.verb = "You declined the invitation for"
-            msg = "Invitation declined"
-        else:
-            return Response(
-                {"error": "Invalid action"}, status=status.HTTP_400_BAD_REQUEST
+            DocumentPermissionModel.objects.update_or_create(
+                user=req.user,
+                document=req.document,
+                version=req.version,
+                defaults={"permission_type": req.permission_type},
             )
+            req.status = "ACCEPTED"
+            notification.verb = "You accepted the invitation for"
 
+        elif action == "reject":
+            req.status = "REJECTED"
+            notification.verb = "You declined the invitation for"
+
+        else:
+            return Response({"error": "Invalid action"}, status=400)
+
+        req.save()
         notification.is_read = True
         notification.save()
-        return Response({"status": msg}, status=status.HTTP_200_OK)
+
+        return Response({"status": req.status})

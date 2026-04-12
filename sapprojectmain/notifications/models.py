@@ -1,7 +1,7 @@
 import uuid
 from django.db import models
 from django.conf import settings
-
+from document_permissions.models import DocumentPermissionRequestModel
 
 class NotificationModel(models.Model):
     # NOTE: Secure UUID used for notification identification
@@ -27,6 +27,14 @@ class NotificationModel(models.Model):
     # NOTE: Link to the specific document that triggered the alert
     target_document = models.ForeignKey(
         "documents.DocumentModel", on_delete=models.CASCADE, null=True, blank=True
+    )
+
+    permission_request = models.ForeignKey(
+        DocumentPermissionRequestModel,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notifications"
     )
 
     # NOTE: Status tracking for the notification

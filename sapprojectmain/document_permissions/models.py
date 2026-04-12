@@ -4,7 +4,8 @@ from django.conf import settings
 from django.utils.translation import gettext_lazy as _
 from documents.models import DocumentModel
 from versions.models import VersionsModel
-
+from django.contrib.auth import get_user_model
+User = get_user_model()
 
 # DOCUMENT PERMISSIONS MODEL DEFINITION
 class DocumentPermissionModel(models.Model):
@@ -57,3 +58,29 @@ class DocumentPermissionModel(models.Model):
 
     def __str__(self):
         return f"{self.user.username} -> {self.document.title} ({self.permission_type})"
+
+# DOCUMENT PERMISSION REQUEST MODEL
+class DocumentPermissionRequestModel(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    document = models.ForeignKey(DocumentModel, on_delete=models.CASCADE)
+    version = models.ForeignKey(VersionsModel, on_delete=models.CASCADE, null=True, blank=True)
+    permission_type = models.CharField(max_length=10)
+
+    status = models.CharField(
+        max_length=10,
+        choices=[
+            ("PENDING", "Pending"),
+            ("ACCEPTED", "Accepted"),
+            ("REJECTED", "Rejected"),
+        ],
+        default="PENDING",
+    )
+
+    requested_by = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="sent_requests"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "document", "permission_type")

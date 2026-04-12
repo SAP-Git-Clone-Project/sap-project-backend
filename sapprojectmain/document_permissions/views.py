@@ -1,3 +1,5 @@
+from urllib import request
+
 from rest_framework import generics, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,8 +13,9 @@ from core.permissions import (
     IsStaffOrSuperUser,
     IsAuthenticatedUser,
 )
-from .models import DocumentPermissionModel
+from .models import DocumentPermissionModel, DocumentPermissionRequestModel
 from .serializers import DocumentPermissionSerializer
+from notifications.models import NotificationModel
 
 # --- MANAGEMENT ACTIONS ---
 
@@ -194,3 +197,39 @@ class RejectDocumentPermissionView(APIView):
         return Response(
             {"detail": "You have successfully resigned from this document"}, status=status.HTTP_200_OK
         )
+    
+class CreatePermissionRequestView(APIView):
+    permission_classes = [IsAuthenticatedUser, HasDocumentDeletePermission]
+
+    def post(self, request):
+        print("CreatePermissionRequestView HIT")
+        print(request.data)
+
+        user_id = request.data.get("user")
+        document_id = request.data.get("document")
+        version_id = request.data.get("version")
+        permission_type = request.data.get("permission_type")
+
+        req, created = DocumentPermissionRequestModel.objects.get_or_create(
+            user_id=user_id,
+            document_id=document_id,
+            version_id=version_id,
+            permission_type=permission_type,
+            defaults={"requested_by": request.user},
+        )
+
+        if not created:
+            return Response(
+                {"detail": "Request already exists"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        NotificationModel.objects.create(
+            recipient_id=user_id,
+            user=request.user,
+            verb=f"invited you as {permission_type}",
+            target_document_id=document_id,
+            permission_request=req,
+        )
+
+        return Response({"status": "request_sent"}, status=201)
