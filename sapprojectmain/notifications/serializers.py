@@ -16,6 +16,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     # NOTE: Calculated field for relative time display like "2 mins ago"
     created_since = serializers.SerializerMethodField()
     permission = serializers.SerializerMethodField()
+    deletion = serializers.SerializerMethodField()
 
     class Meta:
         model = NotificationModel
@@ -30,6 +31,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "created_at",
             "created_since",
             "permission",
+            "deletion",
         ]
         # NOTE: System-managed fields excluded from user input
         read_only_fields = ["id", "created_at", "created_since"]
@@ -58,4 +60,15 @@ class NotificationSerializer(serializers.ModelSerializer):
         return {
             "id": obj.permission_request.id,
             "status": obj.permission_request.status,
+        }
+
+    def get_deletion(self, obj):
+        if not obj.deletion_request:
+            return None
+
+        return {
+            "id": obj.deletion_request.id,
+            "status": obj.deletion_request.status,
+            "document_title": obj.deletion_request.document.title if obj.deletion_request.document else None,
+            "requested_by": obj.deletion_request.requested_by.username if obj.deletion_request.requested_by else None,
         }

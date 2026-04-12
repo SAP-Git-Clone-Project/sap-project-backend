@@ -3,8 +3,9 @@ from .views import (
     NotificationListView,
     MarkNotificationReadView,
     MarkAllReadView,
-    NotificationDeleteView,  # Added this
+    NotificationDeleteView,
     HandleJoinRequestView,
+    HandleDeletionRequestView,
 )
 
 urlpatterns = [
@@ -26,4 +27,5 @@ urlpatterns = [
         HandleJoinRequestView.as_view(),
         name="handle-request",
     ),
+    path("<uuid:pk>/handle-deletion/", HandleDeletionRequestView.as_view(), name="notification-handle-deletion"),
 ]

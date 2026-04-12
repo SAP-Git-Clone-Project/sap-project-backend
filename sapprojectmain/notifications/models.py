@@ -2,6 +2,7 @@ import uuid
 from django.db import models
 from django.conf import settings
 from document_permissions.models import DocumentPermissionRequestModel
+from documents.models import DocumentDeletionRequestModel
 
 class NotificationModel(models.Model):
     # NOTE: Secure UUID used for notification identification
@@ -35,6 +36,13 @@ class NotificationModel(models.Model):
         null=True,
         blank=True,
         related_name="notifications"
+    )
+
+    deletion_request = models.ForeignKey(
+        DocumentDeletionRequestModel,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="notifications",
     )
 
     # NOTE: Status tracking for the notification
