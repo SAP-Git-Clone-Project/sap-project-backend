@@ -16,7 +16,12 @@ from versions.models import VersionsModel
 from .serializers import DocumentSerializer
 from document_permissions.serializers import DocumentPermissionSerializer
 from document_permissions.models import DocumentPermissionModel
+from rest_framework.pagination import PageNumberPagination
 
+class DocumentPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 # ---------------------------------------------------------------------------
 # Helper — shared deletion-request logic (used by both delete endpoints)
@@ -162,8 +167,12 @@ class DocumentListCreateView(APIView):
             documents = DocumentModel.objects.visible_documents(user=user)
 
         documents = documents.order_by("-updated_at")
-        serializer = DocumentSerializer(documents, many=True, context={"request": request})
-        return Response(serializer.data)
+
+        # Apply pagination
+        paginator = DocumentPagination()
+        page = paginator.paginate_queryset(documents, request)
+        serializer = DocumentSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         if request.user.is_staff:
