@@ -154,6 +154,11 @@ class UserListDestroyView(generics.ListCreateAPIView):
             val = is_active.lower() == "true"
             queryset = queryset.filter(is_active=val)
 
+        is_staff = self.request.query_params.get("is_staff")
+        if is_staff is not None:
+            val = is_staff.lower() == "true"
+            queryset = queryset.filter(Q(is_staff=val) | Q(is_superuser=val))
+            
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
 
