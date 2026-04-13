@@ -1,21 +1,26 @@
-from rest_framework import status, generics, filters
+# Django
+from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.hashers import check_password
+from django.contrib.auth.signals import user_logged_in, user_logged_out
+from django.db.models import Q
+from django.shortcuts import get_object_or_404
+
+# DRF
+from rest_framework import filters, generics, status
+from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.permissions import AllowAny
-from django.shortcuts import get_object_or_404
-from django.contrib.auth import get_user_model
-from django.contrib.auth.signals import user_logged_in, user_logged_out
-from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+# SimpleJWT
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.pagination import PageNumberPagination
-from django.db.models import Q
-from django.contrib.auth.hashers import check_password
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from rest_framework_simplejwt.tokens import RefreshToken
+
+# Internal
 from audit_log.middleware import get_current_ip
 from audit_log.models import AuditLogModel
-from django.contrib.auth import authenticate  # ADD THIS
-from rest_framework.exceptions import AuthenticationFailed
 
 from .models import UserModel
 from .serializers import (
@@ -28,7 +33,6 @@ from document_permissions.models import DocumentPermissionModel
 
 # NOTE: Custom permission classes for access control
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUser
-
 
 import json
 
@@ -225,7 +229,6 @@ class AdminDeleteUserView(APIView):
     permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]
 
     def delete(self, request, id):
-        # --- PASSWORD EXTRACTION ---
         password = request.data.get("password")
         if not password:
             try:
@@ -244,7 +247,6 @@ class AdminDeleteUserView(APIView):
                 {"error": "Invalid credentials. Termination aborted."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        # ---------------------------
 
         current_user = request.user
         user_to_delete = get_object_or_404(UserModel, pk=id)
@@ -269,11 +271,14 @@ class AdminDeleteUserView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        OutstandingToken.objects.filter(user=user_to_delete).delete()
+        tokens = OutstandingToken.objects.filter(user=user_to_delete)
+        BlacklistedToken.objects.bulk_create(
+            [BlacklistedToken(token=token) for token in tokens],
+            ignore_conflicts=True
+        )
         user_to_delete.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
-
 
 class ToggleUserView(APIView):
     permission_classes = [IsStaffOrSuperUser]
