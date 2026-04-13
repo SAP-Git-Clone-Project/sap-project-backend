@@ -1,7 +1,7 @@
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Subquery
 import traceback
 
 from core.permissions import (
@@ -11,21 +11,28 @@ from core.permissions import (
     IsAuthenticatedUser,
 )
 
-from .models import DocumentModel, DocumentDeletionDecisionModel, DocumentDeletionRequestModel
+from .models import (
+    DocumentModel,
+    DocumentDeletionDecisionModel,
+    DocumentDeletionRequestModel,
+)
 from versions.models import VersionsModel
 from .serializers import DocumentSerializer
 from document_permissions.serializers import DocumentPermissionSerializer
 from document_permissions.models import DocumentPermissionModel
 from rest_framework.pagination import PageNumberPagination
 
+
 class DocumentPagination(PageNumberPagination):
     page_size = 30
     page_size_query_param = "page_size"
     max_page_size = 1000
 
+
 # ---------------------------------------------------------------------------
 # Helper — shared deletion-request logic (used by both delete endpoints)
 # ---------------------------------------------------------------------------
+
 
 def initiate_deletion_with_notifications(request, document):
     """
@@ -36,7 +43,7 @@ def initiate_deletion_with_notifications(request, document):
     or no reviewers), in which case callers should handle their own response.
     Returns a Response(202) when approval flow is started.
     """
-    from notifications.models import NotificationModel   # local import — avoids circular
+    from notifications.models import NotificationModel  # local import — avoids circular
 
     active_version = VersionsModel.objects.filter(
         document=document, is_active=True
@@ -83,7 +90,7 @@ def initiate_deletion_with_notifications(request, document):
 
         NotificationModel.objects.create(
             recipient=reviewer,
-            user=request.user,                    # who triggered the action
+            user=request.user,  # who triggered the action
             target_document=document,
             verb=f"requested deletion of",
             deletion_request=deletion_request,
@@ -104,6 +111,7 @@ def initiate_deletion_with_notifications(request, document):
 # ---------------------------------------------------------------------------
 # Consolidated Document Detail View
 # ---------------------------------------------------------------------------
+
 
 class DocumentDetailView(APIView):
     def get_permissions(self):
@@ -126,14 +134,18 @@ class DocumentDetailView(APIView):
     def get(self, request, id):
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
         serializer = DocumentSerializer(document, context={"request": request})
         return Response(serializer.data)
 
     def put(self, request, id):
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
         serializer = DocumentSerializer(
             document, data=request.data, partial=True, context={"request": request}
         )
@@ -145,7 +157,9 @@ class DocumentDetailView(APIView):
     def delete(self, request, id):
         document = self.get_object(id)
         if not document:
-            return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
         return initiate_deletion_with_notifications(request, document)
 
@@ -154,25 +168,43 @@ class DocumentDetailView(APIView):
 # Collection & Sharing Views
 # ---------------------------------------------------------------------------
 
+
 class DocumentListCreateView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get(self, request):
-        user = request.user
-        if user.is_superuser:
-            documents = DocumentModel.objects.all()
-        elif user.is_staff:
-            documents = DocumentModel.objects.active_documents()
-        else:
-            documents = DocumentModel.objects.visible_documents(user=user)
+        try:
+            user = request.user
+            if user.is_superuser:
+                documents = DocumentModel.objects.all()
+            elif user.is_staff:
+                documents = DocumentModel.objects.active_documents()
+            else:
+                documents = DocumentModel.objects.visible_documents(user=user)
 
-        documents = documents.order_by("-updated_at")
+            documents = documents.order_by("-updated_at")
 
-        # Apply pagination
-        paginator = DocumentPagination()
-        page = paginator.paginate_queryset(documents, request)
-        serializer = DocumentSerializer(page, many=True, context={"request": request})
-        return paginator.get_paginated_response(serializer.data)
+            status = self.request.query_params.get("status")
+            if status:
+                filtered = documents.filter(versions__status=status, versions__is_active=True).distinct()
+                if not filtered:
+                    latest_version_status = VersionsModel.objects.filter(document=OuterRef('pk')).order_by('-is_active', '-version_number').values('status')[:1]
+                    filtered = documents.annotate(current_version_status=Subquery(latest_version_status)).filter(current_version_status=status)
+                documents = filtered
+
+            search = self.request.query_params.get("search")
+            if search:
+                documents = documents.filter(title__icontains=search)
+
+            # Apply pagination
+            paginator = DocumentPagination()
+            page = paginator.paginate_queryset(documents, request)
+            serializer = DocumentSerializer(page, many=True, context={"request": request})
+            return paginator.get_paginated_response(serializer.data)
+        except Exception as e:
+            traceback.print_exc()
+            print(e)
+            return Response(status=500)
 
     def post(self, request):
         if request.user.is_staff:
@@ -187,6 +219,24 @@ class DocumentListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class DocumentListGetAllView(APIView):
+    permission_classes = [IsAuthenticatedUser]
+
+    def get(self, request):
+        user = request.user
+        if user.is_superuser:
+            documents = DocumentModel.objects.all()
+        elif user.is_staff:
+            documents = DocumentModel.objects.active_documents()
+        else:
+            documents = DocumentModel.objects.visible_documents(user=user)
+
+        documents = documents.order_by("-updated_at")
+
+        serializer = DocumentSerializer(documents, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
 class ShareDocumentView(APIView):
     permission_classes = [HasDocumentWritePermission]
 
@@ -198,7 +248,9 @@ class ShareDocumentView(APIView):
             try:
                 document = DocumentModel.objects.active_documents().get(pk=id)
             except DocumentModel.DoesNotExist:
-                return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND
+                )
             serializer.save(document=document)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -208,6 +260,7 @@ class ShareDocumentView(APIView):
 # Deletion Decision View  (reviewer casts APPROVED / REJECTED)
 # ---------------------------------------------------------------------------
 
+
 class DocumentDeletionDecisionView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
@@ -215,12 +268,17 @@ class DocumentDeletionDecisionView(APIView):
         decision_value = request.data.get("decision")  # "APPROVED" or "REJECTED"
 
         if decision_value not in ("APPROVED", "REJECTED"):
-            return Response({"detail": "Invalid decision value."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Invalid decision value."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             document = DocumentModel.objects.get(pk=id)
         except DocumentModel.DoesNotExist:
-            return Response({"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND
+            )
 
         # Record this reviewer's decision
         DocumentDeletionDecisionModel.objects.update_or_create(
@@ -237,13 +295,17 @@ class DocumentDeletionDecisionView(APIView):
         )
 
         decisions = DocumentDeletionDecisionModel.objects.filter(document=document)
-        approved_ids = set(decisions.filter(decision="APPROVED").values_list("reviewer_id", flat=True))
+        approved_ids = set(
+            decisions.filter(decision="APPROVED").values_list("reviewer_id", flat=True)
+        )
         rejected_exists = decisions.filter(decision="REJECTED").exists()
 
         # Update the DeletionRequest status so notifications stay in sync
-        deletion_request = DocumentDeletionRequestModel.objects.filter(
-            document=document
-        ).order_by("-created_at").first()
+        deletion_request = (
+            DocumentDeletionRequestModel.objects.filter(document=document)
+            .order_by("-created_at")
+            .first()
+        )
 
         if rejected_exists:
             if deletion_request:
@@ -258,14 +320,20 @@ class DocumentDeletionDecisionView(APIView):
                 deletion_request.status = "APPROVED"
                 deletion_request.save()
             document.delete()  # soft-delete via overridden delete()
-            return Response({"detail": "Document deleted after unanimous approval."}, status=status.HTTP_200_OK)
+            return Response(
+                {"detail": "Document deleted after unanimous approval."},
+                status=status.HTTP_200_OK,
+            )
 
-        return Response({"detail": "Decision recorded, waiting for other reviewers."}, status=status.HTTP_200_OK)
+        return Response(
+            {"detail": "Decision recorded, waiting for other reviewers."},
+            status=status.HTTP_200_OK,
+        )
 
 
 def notify_owner_of_decision(document, deletion_request, accepted: bool):
     """Send the document owner a notification about the final deletion decision."""
-    from notifications.models import NotificationModel   # local import
+    from notifications.models import NotificationModel  # local import
 
     if not deletion_request:
         return
@@ -287,6 +355,7 @@ def notify_owner_of_decision(document, deletion_request, accepted: bool):
 # DocumentRequestDeleteView  (owner explicitly requests deletion via POST)
 # ---------------------------------------------------------------------------
 
+
 class DocumentRequestDeleteView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
@@ -294,7 +363,9 @@ class DocumentRequestDeleteView(APIView):
         try:
             document = self.get_object(id)
             if not document:
-                return Response({"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+                )
 
             return initiate_deletion_with_notifications(request, document)
 
