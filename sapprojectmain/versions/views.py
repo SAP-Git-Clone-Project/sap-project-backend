@@ -38,7 +38,10 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
-def get_signed_url(file_path: str, resource_type: str = "raw") -> str:
+def get_signed_url(file_path: str) -> str:
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    resource_type = "image" if ext in {"jpg", "jpeg", "png", "gif", "webp"} else "raw"
+
     parsed = urlparse(file_path)
     parts = parsed.path.split("/upload/", 1)
     if len(parts) < 2:
@@ -49,7 +52,7 @@ def get_signed_url(file_path: str, resource_type: str = "raw") -> str:
     signed_url, _ = cloudinary.utils.cloudinary_url(
         after_upload,
         resource_type=resource_type,
-        type="upload",        # ← was "authenticated", causes /authenticated/ in URL
+        type="upload",
         sign_url=True,
         expires_at=int(time.time()) + 3600,
     )
