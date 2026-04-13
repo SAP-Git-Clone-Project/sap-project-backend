@@ -4,6 +4,7 @@ import difflib
 import cloudinary.uploader
 import io
 from urllib.parse import urlparse
+import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -23,6 +24,10 @@ from documents.models import DocumentModel
 from .serializers import VersionSerializer
 import traceback
 
+import cloudinary.utils
+import time
+import re
+
 from core.permissions import (
     HasDocumentReadPermission,
     HasDocumentWritePermission,
@@ -33,6 +38,22 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
+def get_signed_url(file_path: str, resource_type: str = "raw") -> str:
+    parsed = urlparse(file_path)
+    parts = parsed.path.split("/upload/", 1)
+    if len(parts) < 2:
+        return file_path
+
+    after_upload = re.sub(r"^v\d+/", "", parts[1])
+
+    signed_url, _ = cloudinary.utils.cloudinary_url(
+        after_upload,
+        resource_type=resource_type,
+        type="upload",        # ← was "authenticated", causes /authenticated/ in URL
+        sign_url=True,
+        expires_at=int(time.time()) + 3600,
+    )
+    return signed_url
 
 def generate_checksum(file):
     sha256_hash = hashlib.sha256()
@@ -137,6 +158,26 @@ class DocumentVersionHandler(APIView):
         serializer = VersionSerializer(versions, many=True)
         return Response(serializer.data)
 
+    def get_cloudinary_resource_type(self, file_obj):
+        """
+        Cloudinary has three resource types:
+        - 'image': actual images (jpg, png, gif, webp...)
+        - 'video': video/audio files
+        - 'raw':   everything else (pdf, docx, txt, csv...)
+        """
+        image_mimes = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+        
+        chunk = file_obj.read(8192)
+        file_obj.seek(0)
+        
+        try:
+            matches = magic.magic_string(chunk)
+            mime_type = matches[0].mime_type if matches else "application/octet-stream"
+        except Exception:
+            mime_type = "application/octet-stream"
+        
+        return "image" if mime_type in image_mimes else "raw"
+
     def post(self, request, id):
         try:
             if request.user.is_superuser:
@@ -176,10 +217,14 @@ class DocumentVersionHandler(APIView):
             folder_path = f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
 
             try:
+                resource_type = self.get_cloudinary_resource_type(file_obj)
                 upload_result = cloudinary.uploader.upload(
                     file_obj,
                     folder=folder_path,
-                    resource_type="auto",
+                    resource_type=resource_type,
+                    use_filename=True,
+                    unique_filename=True,
+                    overwrite=False,
                 )
                 file_url = upload_result.get("secure_url")
             except Exception as e:
@@ -250,12 +295,23 @@ class VersionDetailView(APIView):
 class VersionDiffView(APIView):
     permission_classes = [HasDocumentReadPermission]
 
+    def fetch_file_text(self, url):
+        """Helper to get text content from a remote URL"""
+        if not url:
+            return ""
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                return response.text
+            return ""
+        except Exception:
+            return ""
+
     def get(self, request, pk):
 
         version = get_authorized_version(request.user, pk)
 
-        # FIX 4: Cloudinary URLs have query params — parse properly
-        binary_exts = ["pdf", "zip", "docx", "jpg", "png"]
+        binary_exts = ["pdf", "zip", "docx", "doc", "jpg", "png"]
         raw_path = urlparse(version.file_path).path if version.file_path else ""
         ext = raw_path.rsplit(".", 1)[-1].lower() if "." in raw_path else ""
 
@@ -264,19 +320,23 @@ class VersionDiffView(APIView):
                 {
                     "can_compare": False,
                     "message": "Direct text comparison not supported for this file type.",
-                    "file_url": version.file_path,
+                    "file_url": get_signed_url(version.file_path),
                 }
             )
 
         parent = version.parent_version
 
+        current_file_text = self.fetch_file_text(get_signed_url(version.file_path))
+
         if not parent:
             return Response(
-                {"has_parent": False, "new_content": version.content, "diff": []}
+                {"has_parent": False, "new_content": current_file_text, "diff": []}
             )
 
-        old_lines = (parent.content or "").splitlines()
-        new_lines = (version.content or "").splitlines()
+        parent_file_text = self.fetch_file_text(get_signed_url(parent.file_path))
+
+        old_lines = parent_file_text.splitlines()
+        new_lines = current_file_text.splitlines()
 
         matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
         diff_output = []

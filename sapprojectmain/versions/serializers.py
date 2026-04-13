@@ -1,7 +1,6 @@
 from rest_framework import serializers
 from .models import VersionsModel, VersionStatus
 
-
 class VersionSerializer(serializers.ModelSerializer):
     # NOTE: UI helpers to display human-readable names and version relationships
     creator_name = serializers.ReadOnlyField(source="created_by.username")
@@ -13,6 +12,7 @@ class VersionSerializer(serializers.ModelSerializer):
     document_owner_id = serializers.ReadOnlyField(source="document.created_by.id")
     document_title = serializers.ReadOnlyField(source="document.title")
     avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
+    signed_file_path = serializers.SerializerMethodField()
 
     class Meta:
         model = VersionsModel
@@ -28,6 +28,7 @@ class VersionSerializer(serializers.ModelSerializer):
             "parent_version_number",
             "created_at",
             "is_active",
+            "signed_file_path",
             "file_path",
             "file_size",
             "checksum",
@@ -89,3 +90,7 @@ class VersionSerializer(serializers.ModelSerializer):
             validated_data["is_active"] = True
 
         return super().update(instance, validated_data)
+
+    def get_signed_file_path(self, obj):
+        from versions.views import get_signed_url
+        return get_signed_url(obj.file_path)
