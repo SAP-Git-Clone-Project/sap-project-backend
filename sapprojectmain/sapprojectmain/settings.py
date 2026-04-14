@@ -162,7 +162,7 @@ if "test" in sys.argv:
 
 # You can hardcode it for testing, or use os.environ.get('CLOUDINARY_URL')
 cloudinary.config(
-    cloudinary_url="cloudinary://237824979836918:98evy7q7E2R_3eZ77v5aEzlJKi8@df1dqsckt",
+    cloudinary_url=os.getenv("CLOUDINARY_URL"),
     secure=True,
 )
 
