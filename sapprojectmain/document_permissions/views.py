@@ -100,33 +100,20 @@ class GetDocumentMembersView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get_queryset(self):
-        try:
-            # Map URL variable doc_id to model field document_id
-            doc_id = self.kwargs.get("doc_id")
-            user = self.request.user
+        # Map URL variable doc_id to model field document_id
+        doc_id = self.kwargs.get("doc_id")
+        user = self.request.user
 
-            base_query = DocumentPermissionModel.objects.filter(
-                Q(document_id=doc_id) | Q(version_id=doc_id)
-            ).select_related("user", "document")
+        base_query = DocumentPermissionModel.objects.filter(
+            Q(document_id=doc_id) | Q(version_id=doc_id)
+        ).select_related("user", "document")
 
-            if not user.is_staff and not user.is_superuser:
-                is_member = base_query.filter(user=user).exists()
-                if not is_member:
-                    raise PermissionDenied()
+        if not user.is_staff and not user.is_superuser:
+            is_member = base_query.filter(user=user).exists()
+            if not is_member:
+                raise PermissionDenied()
 
-            try:
-                # Converting to a list forces the database query and
-                # helps reveal errors before the renderer starts
-                list(base_query)
-            except Exception as e:
-                print("--- DATABASE ERROR ---")
-                traceback.print_exc()
-                raise ValueError({"error": "Database query failed"})
-
-            return base_query
-        except Exception as e:
-            traceback.print_exc()
-            raise PermissionDenied()
+        return base_query
 
 
 class GetAllDocumentPermissionsView(APIView):
@@ -136,14 +123,19 @@ class GetAllDocumentPermissionsView(APIView):
 
     def get(self, request):
         user = request.user
+
+        base_queryset = DocumentPermissionModel.objects.select_related("user", "document")
+
         if user.is_staff or user.is_superuser:
-            permissions = DocumentPermissionModel.objects.all()
+            permissions = base_queryset.all()
         else:
             # Filter for docs where user has management rights
-            permissions = DocumentPermissionModel.objects.filter(
-                document__document_permissions__user=user,
-                document__document_permissions__permission_type__in=["WRITE", "DELETE"],
-            ).distinct()
+            manageable_docs = DocumentPermissionModel.objects.filter(
+                user=user, 
+                permission_type__in=["WRITE", "DELETE"]
+            ).values('document_id')
+            
+            permissions = base_qs.filter(document_id__in=manageable_docs)
 
         serializer = DocumentPermissionSerializer(permissions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

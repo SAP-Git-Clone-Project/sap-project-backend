@@ -25,8 +25,11 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
     )
     username = serializers.ReadOnlyField(source="user.username")
     document_title = serializers.ReadOnlyField(source="document.title")
+    first_name = serializers.ReadOnlyField(source="user.first_name")
+    last_name = serializers.ReadOnlyField(source="user.last_name")
+    user_avatar = serializers.ReadOnlyField(source="user.avatar")
     full_name = serializers.SerializerMethodField()
-    user_avatar = serializers.SerializerMethodField()
+    # user_avatar = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentPermissionModel
@@ -60,9 +63,7 @@ class DocumentPermissionSerializer(serializers.ModelSerializer):
         return instance
     
     def get_full_name(self, obj):
-        if obj.user:
-            return f"{obj.user.first_name} {obj.user.last_name}".strip()
-        return ""
+        return f"{first_name} {last_name}".strip()
 
     def get_user_avatar(self, obj):
         if obj.user:
