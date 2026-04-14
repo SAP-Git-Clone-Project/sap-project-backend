@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
 from django.db.models import Q
 import traceback
+import uuid
 
 from core.permissions import (
     HasDocumentWritePermission,
@@ -100,20 +101,26 @@ class GetDocumentMembersView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get_queryset(self):
-        # Map URL variable doc_id to model field document_id
-        doc_id = self.kwargs.get("doc_id")
+        raw_doc_id = self.kwargs.get("doc_id")
+            
+        try:
+            doc_id = uuid.UUID(str(raw_doc_id))
+        except (ValueError, TypeError):
+            # If not a valid UUID, return empty rather than crashing
+            return DocumentPermissionModel.objects.none()
+
         user = self.request.user
 
-        base_query = DocumentPermissionModel.objects.filter(
+        queryset = DocumentPermissionModel.objects.filter(
             Q(document_id=doc_id) | Q(version_id=doc_id)
-        ).select_related("user", "document")
+        ).select_related("user", "document", "version").distinct()
 
         if not user.is_staff and not user.is_superuser:
-            is_member = base_query.filter(user=user).exists()
-            if not is_member:
-                raise PermissionDenied()
+            # Check if the requesting user has any link to this doc/version
+            if not queryset.filter(user=user).exists():
+                raise PermissionDenied("You do not have access to this document's member list.")
 
-        return base_query
+        return queryset
 
 
 class GetAllDocumentPermissionsView(APIView):
@@ -135,7 +142,7 @@ class GetAllDocumentPermissionsView(APIView):
                 permission_type__in=["WRITE", "DELETE"]
             ).values('document_id')
             
-            permissions = base_qs.filter(document_id__in=manageable_docs)
+            permissions = base_queryset.filter(document_id__in=manageable_docs)
 
         serializer = DocumentPermissionSerializer(permissions, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
