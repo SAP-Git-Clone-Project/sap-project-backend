@@ -36,7 +36,9 @@ from core.permissions import (
 from rest_framework.permissions import IsAuthenticated
 
 from django.contrib.auth import get_user_model
+
 User = get_user_model()
+
 
 def get_signed_url(file_path: str) -> str:
     ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
@@ -58,6 +60,7 @@ def get_signed_url(file_path: str) -> str:
     )
     return signed_url
 
+
 def generate_checksum(file):
     sha256_hash = hashlib.sha256()
     file.seek(0)
@@ -70,7 +73,7 @@ def generate_checksum(file):
 def get_authorized_version(user, pk):
     if user.is_superuser:
         return get_object_or_404(VersionsModel, pk=pk)
-    
+
     base_qs = VersionsModel.objects.select_related("document")
 
     return get_object_or_404(
@@ -92,7 +95,7 @@ class DocumentVersionHandler(APIView):
         if self.request.method == "GET":
             return [HasDocumentReadPermission()]
         return [HasDocumentWritePermission()]
-    
+
     def validate_is_text_or_asset(self, file):
         chunk = file.read(8192)
 
@@ -108,20 +111,25 @@ class DocumentVersionHandler(APIView):
         file.seek(0)
 
         allowed_mimes = [
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'image/jpeg',
-            'image/png'
+            # Documents
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            # Images (Existing + New)
+            "image/jpeg",  # Covers .jpg and .jpeg
+            "image/png",  # .png
+            "image/gif",  # .gif
+            "image/webp",  # .webp
+            "image/svg+xml",  # .svg (Note the +xml suffix)
         ]
 
         if not (
-            mime_type.startswith('text/')
+            mime_type.startswith("text/")
             or mime_type in allowed_mimes
-            or file.name.endswith('.doc')
-            or file.name.endswith('.docx')
-            or file.name.endswith('.pdf')
-            or file.name.endswith('.txt')
+            or file.name.endswith(".doc")
+            or file.name.endswith(".docx")
+            or file.name.endswith(".pdf")
+            or file.name.endswith(".txt")
         ):
             raise ValidationError(
                 f"Asset Security Breach: File type '{mime_type}' is not authorized."
@@ -142,7 +150,12 @@ class DocumentVersionHandler(APIView):
 
         if not request.user.is_superuser:
             if doc.is_deleted:
-                return Response({"detail": "You can't access a version associated with a deleted document"}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {
+                        "detail": "You can't access a version associated with a deleted document"
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         versions = VersionsModel.objects.filter(document=doc).order_by(
             "-version_number"
@@ -169,16 +182,16 @@ class DocumentVersionHandler(APIView):
         - 'raw':   everything else (pdf, docx, txt, csv...)
         """
         image_mimes = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-        
+
         chunk = file_obj.read(8192)
         file_obj.seek(0)
-        
+
         try:
             matches = magic.magic_string(chunk)
             mime_type = matches[0].mime_type if matches else "application/octet-stream"
         except Exception:
             mime_type = "application/octet-stream"
-        
+
         return "image" if mime_type in image_mimes else "raw"
 
     def post(self, request, id):
@@ -187,7 +200,8 @@ class DocumentVersionHandler(APIView):
                 docs = DocumentModel.objects.all()
             else:
                 docs = DocumentModel.objects.filter(
-                    Q(created_by=request.user) | Q(document_permissions__user=request.user)
+                    Q(created_by=request.user)
+                    | Q(document_permissions__user=request.user)
                 ).distinct()
 
             doc = get_object_or_404(
@@ -204,20 +218,26 @@ class DocumentVersionHandler(APIView):
                 )
 
             self.validate_is_text_or_asset(file_obj)
-                
-            serializer = VersionSerializer(data=request.data, context={"request": request})
+
+            serializer = VersionSerializer(
+                data=request.data, context={"request": request}
+            )
             if not serializer.is_valid():
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
             checksum = generate_checksum(file_obj)
 
             last_v = (
-                VersionsModel.objects.filter(document=doc).order_by("version_number").last()
+                VersionsModel.objects.filter(document=doc)
+                .order_by("version_number")
+                .last()
             )
 
             new_version_number = (last_v.version_number + 1) if last_v else 1
 
-            folder_path = f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
+            folder_path = (
+                f"documents/{doc.created_by.id}/{doc.id}/v{new_version_number}"
+            )
 
             try:
                 resource_type = self.get_cloudinary_resource_type(file_obj)
@@ -247,9 +267,9 @@ class DocumentVersionHandler(APIView):
                     created_by=request.user,
                     parent_version=last_v,
                 )
-                
+
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
         except Exception as ve:
             print(ve)
 
@@ -438,6 +458,7 @@ class VersionExportView(APIView):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+
 class VersionInheritedReviewersView(APIView):
     def get(self, request, pk):
         version_id = pk
@@ -450,19 +471,21 @@ class VersionInheritedReviewersView(APIView):
 
             users = User.objects.filter(id__in=reviewer_ids)
 
-            return Response([
-                {
-                    "id": u.id,
-                    "username": u.username,
-                }
-                for u in users
-            ])
-        
+            return Response(
+                [
+                    {
+                        "id": u.id,
+                        "username": u.username,
+                    }
+                    for u in users
+                ]
+            )
+
         except Exception as e:
             print(traceback.format_exc())
             print(e)
             return Response({"error": str(e)}, status=500)
-    
+
     def get_inherited_reviewers(self, version):
         visited = set()
         reviewers = set()
@@ -475,9 +498,9 @@ class VersionInheritedReviewersView(APIView):
             visited.add(current.id)
 
             # get reviewers from this version
-            version_reviewers = ReviewModel.objects.filter(
-                version=current
-            ).values_list("reviewer", flat=True)
+            version_reviewers = ReviewModel.objects.filter(version=current).values_list(
+                "reviewer", flat=True
+            )
 
             reviewers.update(version_reviewers)
 
