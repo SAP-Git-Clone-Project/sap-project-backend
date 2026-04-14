@@ -160,7 +160,6 @@ if "test" in sys.argv:
         }
     }
 
-# You can hardcode it for testing, or use os.environ.get('CLOUDINARY_URL')
 cloudinary.config(
     cloudinary_url=os.getenv("CLOUDINARY_URL"),
     secure=True,
