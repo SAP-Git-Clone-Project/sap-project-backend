@@ -24,45 +24,27 @@ class DocumentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
     def get_active_version(self, obj):
+        # First, try to get the active version
+        versions_list = getattr(obj, 'prefetched_versions', list(obj.versions.all()))
+        active_v = next((v for v in versions_list if v.is_active), None)
+        if active_v:
+            return VersionSerializer(active_v).data
+        
         request = self.context.get("request", None)
         user = getattr(request, "user", None)
 
-        # First, try to get the active version
-        version = obj.versions.filter(is_active=True).first()
-        if version:
-            return VersionSerializer(version).data
-
         # If no active version, check for permissions
         if user:
-            permission_qs = obj.document_permissions.filter(
-                user=user,
-                permission_type__in=["READ", "WRITE", "DELETE", "APPROVE"]
-            )
-            if permission_qs.exists() or user.is_superuser or user == obj.created_by:
-                # Return the latest version regardless of is_active
-                latest_version = obj.versions.order_by("-version_number").first()
-                if latest_version:
-                    return VersionSerializer(latest_version).data
+            is_owner = obj.created_by_id == user.id
+            is_superuser = user.is_superuser
+            has_perm = getattr(obj, 'user_has_permission_annotated', False)
 
-        # Fallback for anonymous users or no permissions
+            if is_owner or is_superuser or has_perm:
+                if versions_list:
+                    latest_v = sorted(versions_list, key=lambda v: v.version_number, reverse=True)[0]
+                    return VersionSerializer(latest_v).data
+                
         return None
-
-    '''
-    def get_versions(self, obj):
-        """
-        Return all versions if the request user is the creator,
-        otherwise return only the active version.
-        """
-        request = self.context.get("request", None)
-        if request:
-            if request.user.is_superuser or request.user == obj.created_by:
-                return VersionSerializer(obj.versions.all(), many=True).data
-        else:
-            active_version = obj.versions.filter(is_active=True).first()
-            if active_version:
-                return [VersionSerializer(active_version).data]
-            return []
-    '''
 
     # Optional: title validation and creation/update logic
     def validate_title(self, value):

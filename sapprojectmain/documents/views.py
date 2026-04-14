@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q, OuterRef, Subquery
 import traceback
+from django.db.models import Prefetch
 
 from core.permissions import (
     HasDocumentReadPermission,
@@ -173,38 +174,35 @@ class DocumentListCreateView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def get(self, request):
-        try:
-            user = request.user
-            if user.is_superuser:
-                documents = DocumentModel.objects.all()
-            elif user.is_staff:
-                documents = DocumentModel.objects.active_documents()
-            else:
-                documents = DocumentModel.objects.visible_documents(user=user)
+        user = request.user
+        if user.is_superuser:
+            documents = DocumentModel.objects.all().select_related('created_by')
+        elif user.is_staff:
+            documents = DocumentModel.objects.active_documents().select_related('created_by')
+        else:
+            documents = DocumentModel.objects.visible_documents(user=user)
 
-            documents = documents.order_by("-updated_at")
+        documents = documents.prefetch_related(
+            Prefetch('versions', queryset=VersionsModel.objects.all().order_by('-version_number'), to_attr='prefetched_versions')
+        ).order_by("-updated_at")
 
-            status = self.request.query_params.get("status")
-            if status:
-                filtered = documents.filter(versions__status=status, versions__is_active=True).distinct()
-                if not filtered:
-                    latest_version_status = VersionsModel.objects.filter(document=OuterRef('pk')).order_by('-is_active', '-version_number').values('status')[:1]
-                    filtered = documents.annotate(current_version_status=Subquery(latest_version_status)).filter(current_version_status=status)
-                documents = filtered
+        status = self.request.query_params.get("status")
+        if status:
+            filtered = documents.filter(versions__status=status, versions__is_active=True).distinct()
+            if not filtered:
+                latest_version_status = VersionsModel.objects.filter(document=OuterRef('pk')).order_by('-is_active', '-version_number').values('status')[:1]
+                filtered = documents.annotate(current_version_status=Subquery(latest_version_status)).filter(current_version_status=status)
+            documents = filtered
 
-            search = self.request.query_params.get("search")
-            if search:
-                documents = documents.filter(title__icontains=search)
+        search = self.request.query_params.get("search")
+        if search:
+            documents = documents.filter(title__icontains=search)
 
-            # Apply pagination
-            paginator = DocumentPagination()
-            page = paginator.paginate_queryset(documents, request)
-            serializer = DocumentSerializer(page, many=True, context={"request": request})
-            return paginator.get_paginated_response(serializer.data)
-        except Exception as e:
-            traceback.print_exc()
-            print(e)
-            return Response(status=500)
+        # Apply pagination
+        paginator = DocumentPagination()
+        page = paginator.paginate_queryset(documents, request)
+        serializer = DocumentSerializer(page, many=True, context={"request": request})
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         if request.user.is_staff:

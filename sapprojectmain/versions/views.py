@@ -4,6 +4,7 @@ import difflib
 import cloudinary.uploader
 import io
 from urllib.parse import urlparse
+import httpx
 import requests
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -56,7 +57,7 @@ def get_signed_url(file_path: str) -> str:
         resource_type=resource_type,
         type="upload",
         sign_url=True,
-        expires_at=int(time.time()) + 3600,
+        expires_at=int(time.time()) + 300,
     )
     return signed_url
 
@@ -136,6 +137,8 @@ class DocumentVersionHandler(APIView):
             )
 
     def get(self, request, id):
+        from django.db.models import Exists, OuterRef
+
         if request.user.is_superuser:
             docs = DocumentModel.objects.all()
         else:
@@ -148,30 +151,22 @@ class DocumentVersionHandler(APIView):
             id=id,
         )
 
-        if not request.user.is_superuser:
-            if doc.is_deleted:
-                return Response(
-                    {
-                        "detail": "You can't access a version associated with a deleted document"
-                    },
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-        versions = VersionsModel.objects.filter(document=doc).order_by(
-            "-version_number"
-        )
+        versions = VersionsModel.objects.filter(document=doc).select_related(
+            "created_by", 
+            "document", 
+            "parent_version"
+        ).order_by("-version_number")
 
         is_owner = (
-            doc.created_by == request.user
-            or doc.document_permissions.filter(
-                user=request.user, permission_type="DELETE"
-            ).exists()
+            request.user.is_superuser or 
+            doc.created_by == request.user or 
+            doc.document_permissions.filter(user=request.user, permission_type="DELETE").exists()
         )
 
-        if not is_owner and not request.user.is_superuser:
+        if not is_owner:
             versions = versions.exclude(status=VersionStatus.REJECTED)
 
-        serializer = VersionSerializer(versions, many=True)
+        serializer = VersionSerializer(versions, many=True, context={"request": request})
         return Response(serializer.data)
 
     def get_cloudinary_resource_type(self, file_obj):
@@ -319,22 +314,19 @@ class VersionDiffView(APIView):
     permission_classes = [HasDocumentReadPermission]
 
     def fetch_file_text(self, url):
-        """Helper to get text content from a remote URL"""
-        if not url:
-            return ""
+        if not url: return ""
         try:
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                return response.text
-            return ""
-        except Exception:
+            # Add a small timeout
+            with httpx.Client() as client:
+                r = client.get(url, timeout=5.0)
+                return r.text if r.status_code == 200 else ""
+        except:
             return ""
 
     def get(self, request, pk):
-
         version = get_authorized_version(request.user, pk)
 
-        binary_exts = ["pdf", "zip", "docx", "doc", "jpg", "png"]
+        binary_exts = ["pdf", "docx", "doc"]
         raw_path = urlparse(version.file_path).path if version.file_path else ""
         ext = raw_path.rsplit(".", 1)[-1].lower() if "." in raw_path else ""
 
@@ -461,30 +453,24 @@ class VersionExportView(APIView):
 
 class VersionInheritedReviewersView(APIView):
     def get(self, request, pk):
-        version_id = pk
-        print(f"DEBUG: Fetching reviewers for version {version_id}")
+        version = get_object_or_404(VersionsModel.objects.select_related('document'), pk=pk)
+            
+        # Fetch all versions for this document once
+        all_versions = VersionsModel.objects.filter(
+            document_id=version.document_id,
+            version_number__lt=version.version_number
+        ).values_list('id', flat=True)
 
-        try:
-            version = get_object_or_404(VersionsModel, pk=version_id)
+        # Fetch all reviews for those versions in one query
+        reviewer_ids = ReviewModel.objects.filter(
+            version_id__in=all_versions
+        ).values_list("reviewer", flat=True).distinct()
 
-            reviewer_ids = self.get_inherited_reviewers(version)
+        users = User.objects.filter(id__in=reviewer_ids).only('id', 'username')
 
-            users = User.objects.filter(id__in=reviewer_ids)
-
-            return Response(
-                [
-                    {
-                        "id": u.id,
-                        "username": u.username,
-                    }
-                    for u in users
-                ]
-            )
-
-        except Exception as e:
-            print(traceback.format_exc())
-            print(e)
-            return Response({"error": str(e)}, status=500)
+        return Response([
+            {"id": u.id, "username": u.username} for u in users
+        ])
 
     def get_inherited_reviewers(self, version):
         visited = set()

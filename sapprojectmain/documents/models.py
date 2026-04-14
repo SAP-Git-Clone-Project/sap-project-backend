@@ -20,7 +20,7 @@ class DocumentQuerySet(models.QuerySet):
 # --- DOCUMENT MANAGER ---
 class DocumentManager(models.Manager):
     def get_queryset(self):
-        return DocumentQuerySet(self.model, using=self._db)
+        return DocumentQuerySet(self.model, using=self._db).select_related('created_by')
 
     def active_documents(self):
         return self.get_queryset().active()
@@ -31,7 +31,12 @@ class DocumentManager(models.Manager):
         active_version = VersionsModel.objects.filter(document=models.OuterRef("pk"), is_active=True)
         has_permission = DocumentPermissionModel.objects.filter(document=models.OuterRef("pk"), user=user)
 
-        return self.active_documents().annotate(has_active_version=models.Exists(active_version), user_has_permission=models.Exists(has_permission)).filter(Q(created_by=user) | Q(has_active_version=True) | Q(user_has_permission=True)).distinct()
+        return self.active_documents().annotate(
+            has_active_version=models.Exists(active_version),
+            user_has_permission=models.Exists(has_permission)
+        ).filter(
+            Q(created_by=user) | Q(has_active_version=True) | Q(user_has_permission=True)
+        ).distinct()
 
     def create_document(self, created_by, title, **extra_fields):
         # NOTE: Handles document creation and initial owner permissions
