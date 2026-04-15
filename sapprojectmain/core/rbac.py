@@ -4,7 +4,8 @@ from user_roles.models import Role, UserRole
 
 PERMISSION_TO_ROLE = {
     DocumentPermissionModel.PermissionType.READ: Role.RoleName.READER,
-    DocumentPermissionModel.PermissionType.WRITE: Role.RoleName.WRITER,
+    # Co-author access is restricted to global AUTHOR users.
+    DocumentPermissionModel.PermissionType.WRITE: Role.RoleName.AUTHOR,
     DocumentPermissionModel.PermissionType.APPROVE: Role.RoleName.REVIEWER,
     DocumentPermissionModel.PermissionType.DELETE: Role.RoleName.AUTHOR,
 }

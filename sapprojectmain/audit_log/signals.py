@@ -1,42 +1,64 @@
-from django.db.models.signals import post_save, post_delete
-from django.contrib.auth.signals import user_logged_in, user_logged_out
-from django.dispatch import receiver
 from django.contrib.auth import get_user_model
+from django.contrib.auth.signals import user_logged_in, user_logged_out
+from django.db import transaction
+from django.db.models.signals import post_delete, post_save, pre_save
+from django.dispatch import receiver
 
-# Direct Imports
+from .middleware import get_current_ip
 from .models import AuditLogModel
-from documents.models import DocumentModel
 from document_permissions.models import DocumentPermissionModel
-from versions.models import VersionsModel
+from documents.models import DocumentModel
+from notifications.models import NotificationModel
 from reviews.models import ReviewModel
 from user_roles.models import UserRole
-
-# NOTE: Utilizing custom middleware helper to capture request-bound IP addresses
-from .middleware import get_current_ip
+from versions.models import VersionsModel
 
 User = get_user_model()
 
-# --- 1. AUTH & USER LOGS ---
+
+@receiver(pre_save, sender=User)
+def store_old_user_state(sender, instance, **kwargs):
+    if not instance.pk:
+        instance._old_is_active = None
+        return
+    try:
+        old_user = User.objects.get(pk=instance.pk)
+        instance._old_is_active = old_user.is_active
+    except User.DoesNotExist:
+        instance._old_is_active = None
+
+
+@receiver(pre_save, sender=ReviewModel)
+def store_old_review_status(sender, instance, **kwargs):
+    if not instance.pk:
+        instance._old_status = None
+        return
+    try:
+        instance._old_status = ReviewModel.objects.get(pk=instance.pk).review_status
+    except ReviewModel.DoesNotExist:
+        instance._old_status = None
 
 
 @receiver(post_save, sender=User)
 def log_user_changes(sender, instance, created, update_fields, **kwargs):
-    # 1. HANDLE NEW REGISTRATION
     if created:
         action = "create user"
         detail = f"New user registered: {instance.email} (ID: {instance.id})"
-
-    # 2. HANDLE UPDATES (ONLY if it's NOT a new creation)
-    # We check if update_fields is None (full save) OR contains fields that aren't 'last_login'
-    elif update_fields is None or (update_fields and "last_login" not in update_fields):
-        action = "update user"
-        detail = f"User profile updated for: {instance.email} (ID: {instance.id})"
-
-    # 3. IGNORE EVERYTHING ELSE (like the automatic 'last_login' update)
     else:
-        return
+        old_is_active = getattr(instance, "_old_is_active", None)
+        if old_is_active is not None and old_is_active != instance.is_active:
+            if instance.is_active:
+                action = "update user"
+                detail = f"[BAN TAG] User unbanned/reactivated: {instance.email} (ID: {instance.id})"
+            else:
+                action = "update user"
+                detail = f"[BAN TAG] User banned/deactivated: {instance.email} (ID: {instance.id})"
+        elif update_fields is None or (update_fields and "last_login" not in update_fields):
+            action = "update user"
+            detail = f"User profile updated for: {instance.email} (ID: {instance.id})"
+        else:
+            return
 
-    # SECURITY: Using 'or "0.0.0.0"' to prevent database crashes if IP capture fails
     AuditLogModel.objects.create(
         user=instance,
         action_type=action,
@@ -47,7 +69,6 @@ def log_user_changes(sender, instance, created, update_fields, **kwargs):
 
 @receiver(post_delete, sender=User)
 def log_user_deletion(sender, instance, **kwargs):
-    # SECURITY: Critical log — user FK will be NULL since the user is gone
     AuditLogModel.objects.create(
         action_type="delete user",
         ip_address=get_current_ip() or "0.0.0.0",
@@ -57,7 +78,6 @@ def log_user_deletion(sender, instance, **kwargs):
 
 @receiver(user_logged_in)
 def log_login(sender, user, **kwargs):
-    # Capture the login event. Ensure your Serializer triggers this for JWT!
     AuditLogModel.objects.create(
         user=user,
         action_type="login",
@@ -68,29 +88,25 @@ def log_login(sender, user, **kwargs):
 
 @receiver(user_logged_out)
 def log_logout(sender, user, **kwargs):
-    if user:
-        AuditLogModel.objects.create(
-            user=user,
-            action_type="logout",
-            ip_address=get_current_ip() or "0.0.0.0",
-            description=f"User {user.email} (ID: {user.id}) logged out.",
-        )
-
-
-# --- 2. DOCUMENT LOGS ---
+    if not user:
+        return
+    AuditLogModel.objects.create(
+        user=user,
+        action_type="logout",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=f"User {user.email} (ID: {user.id}) logged out.",
+    )
 
 
 @receiver(post_save, sender=DocumentModel)
 def log_doc_activity(sender, instance, created, **kwargs):
     verb = "created" if created else "updated metadata for"
     action = "create document" if created else "update document"
-
-    # IMP: Logging document ownership and metadata modifications
     AuditLogModel.objects.create(
         user=instance.created_by,
         document=instance,
         action_type=action,
-        ip_address=get_current_ip(),
+        ip_address=get_current_ip() or "0.0.0.0",
         description=(
             f"User {instance.created_by.email} (ID: {instance.created_by.id}) {verb} "
             f"document: '{instance.title}' (ID: {instance.id})"
@@ -100,7 +116,6 @@ def log_doc_activity(sender, instance, created, **kwargs):
 
 @receiver(post_delete, sender=DocumentModel)
 def log_doc_deletion(sender, instance, **kwargs):
-    # SECURITY: Critical log entry for permanent data removal from the system
     AuditLogModel.objects.create(
         action_type="delete document",
         ip_address=get_current_ip() or "0.0.0.0",
@@ -108,15 +123,10 @@ def log_doc_deletion(sender, instance, **kwargs):
     )
 
 
-# --- 3. PERMISSION LOGS ---
-
-
 @receiver(post_save, sender=DocumentPermissionModel)
 def log_permission_change(sender, instance, created, **kwargs):
     granter = instance.document.created_by
     action_str = "granted" if created else "modified"
-
-    # SECURITY: Monitoring access control changes to prevent unauthorized permission escalation
     AuditLogModel.objects.create(
         user=granter,
         document=instance.document,
@@ -129,11 +139,20 @@ def log_permission_change(sender, instance, created, **kwargs):
         ),
     )
 
+    # Notifications are centralized here to avoid per-app signal scattering.
+    if created:
+        transaction.on_commit(
+            lambda: NotificationModel.objects.create(
+                recipient=instance.user,
+                user=granter,
+                verb=f"permission granted by admin/owner: {instance.permission_type}",
+                target_document=instance.document,
+            )
+        )
+
 
 @receiver(post_delete, sender=DocumentPermissionModel)
 def log_permission_revoke(sender, instance, **kwargs):
-    # SECURITY: When a document is cascade-deleted, its permissions go too —
-    # instance.document may already be gone, so we guard against that.
     try:
         granter = instance.document.created_by
         actor = f"User {granter.email} (ID: {granter.id}) revoked"
@@ -141,8 +160,10 @@ def log_permission_revoke(sender, instance, **kwargs):
     except Exception:
         actor = "System revoked"
         doc_info = "— document no longer exists (cascade deletion)"
+        granter = None
 
     AuditLogModel.objects.create(
+        user=granter,
         action_type="update metadata",
         ip_address=get_current_ip() or "0.0.0.0",
         description=(
@@ -152,34 +173,48 @@ def log_permission_revoke(sender, instance, **kwargs):
         ),
     )
 
-
-# --- 4. VERSION LOGS ---
+    if granter:
+        transaction.on_commit(
+            lambda: NotificationModel.objects.create(
+                recipient=instance.user,
+                user=granter,
+                verb=f"permission revoked by admin/owner: {instance.permission_type}",
+                target_document=instance.document,
+            )
+        )
 
 
 @receiver(post_save, sender=VersionsModel)
 def log_version_activity(sender, instance, created, **kwargs):
-    if created:
-        if not instance.created_by:
-            return
+    if not created or not instance.created_by:
+        return
 
-        # IMP: Tracking the upload of new physical files/content iterations
-        AuditLogModel.objects.create(
-            user=instance.created_by,
-            document=instance.document,
-            version=instance,
-            action_type="create version",
-            ip_address=get_current_ip() or "0.0.0.0",
-            description=(
-                f"User {instance.created_by.email} (ID: {instance.created_by.id}) uploaded "
-                f"version {instance.version_number} (ID: {instance.id}) "
-                f"for document: '{instance.document.title}' (ID: {instance.document.id})"
-            ),
+    AuditLogModel.objects.create(
+        user=instance.created_by,
+        document=instance.document,
+        version=instance,
+        action_type="create version",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=(
+            f"User {instance.created_by.email} (ID: {instance.created_by.id}) uploaded "
+            f"version {instance.version_number} (ID: {instance.id}) "
+            f"for document: '{instance.document.title}' (ID: {instance.document.id})"
+        ),
+    )
+
+    if instance.created_by != instance.document.created_by:
+        transaction.on_commit(
+            lambda: NotificationModel.objects.create(
+                recipient=instance.document.created_by,
+                user=instance.created_by,
+                verb="uploaded a new version to",
+                target_document=instance.document,
+            )
         )
 
 
 @receiver(post_delete, sender=VersionsModel)
 def log_version_deletion(sender, instance, **kwargs):
-    # IMP: Version FK will be NULL in the log since it's already deleted
     AuditLogModel.objects.create(
         action_type="delete version",
         ip_address=get_current_ip() or "0.0.0.0",
@@ -190,61 +225,89 @@ def log_version_deletion(sender, instance, **kwargs):
     )
 
 
-# --- 5. REVIEW LOGS ---
-
-
 @receiver(post_save, sender=ReviewModel)
-def log_review_activity(sender, instance, created, **kwargs):
-    # NOTE: Selective logging only for terminal review states (approved/rejected)
-    if instance.review_status == "approved":
+def log_and_notify_review_activity(sender, instance, created, **kwargs):
+    status_value = (instance.review_status or "").lower()
+    if status_value == "approved":
         action = "approve version"
-    elif instance.review_status == "rejected":
+    elif status_value == "rejected":
         action = "reject version"
     else:
+        action = None
+
+    if action and instance.reviewer:
+        AuditLogModel.objects.create(
+            user=instance.reviewer,
+            document=instance.version.document,
+            version=instance.version,
+            action_type=action,
+            ip_address=get_current_ip() or "0.0.0.0",
+            description=(
+                f"Reviewer {instance.reviewer.email} (ID: {instance.reviewer.id}) {status_value} "
+                f"version {instance.version.version_number} (ID: {instance.version.id}) "
+                f"of document: '{instance.version.document.title}'"
+            ),
+        )
+
+    if created:
         return
 
-    if not instance.reviewer:
-        return
-
-    # IMP: Documenting the formal approval/rejection workflow for audit compliance
-    AuditLogModel.objects.create(
-        user=instance.reviewer,
-        document=instance.version.document,
-        version=instance.version,
-        action_type=action,
-        ip_address=get_current_ip() or "0.0.0.0",
-        description=(
-            f"Reviewer {instance.reviewer.email} (ID: {instance.reviewer.id}) {instance.review_status} "
-            f"version {instance.version.version_number} (ID: {instance.version.id}) "
-            f"of document: '{instance.version.document.title}'"
-        ),
-    )
+    old_status = getattr(instance, "_old_status", None)
+    new_status = (instance.review_status or "").upper()
+    if old_status != instance.review_status and new_status in ["APPROVED", "REJECTED"]:
+        transaction.on_commit(
+            lambda: NotificationModel.objects.create(
+                recipient=instance.version.created_by,
+                user=instance.reviewer,
+                verb=f"{new_status.lower()} your version of",
+                target_document=instance.version.document,
+            )
+        )
 
 
 @receiver(post_save, sender=UserRole)
 def log_user_role_assignment(sender, instance, created, **kwargs):
     actor = instance.assigned_by or instance.user
-    action = "assign role" if created else "update role assignment"
+    action_text = "Role added" if created else "Role changed"
+    role_name = instance.role.role_name
+
     AuditLogModel.objects.create(
         user=instance.assigned_by if instance.assigned_by else None,
         action_type="update user",
         ip_address=get_current_ip() or "0.0.0.0",
         description=(
-            f"User {actor.email} (ID: {actor.id}) {action} '{instance.role.role_name}' "
-            f"for user {instance.user.email} (ID: {instance.user.id})"
+            f"{action_text}: '{role_name}' for user {instance.user.email} (ID: {instance.user.id}) "
+            f"by {actor.email} (ID: {actor.id})"
         ),
+    )
+
+    transaction.on_commit(
+        lambda: NotificationModel.objects.create(
+            recipient=instance.user,
+            user=instance.assigned_by,
+            verb=f"{action_text.lower()} by admin: {role_name}",
+        )
     )
 
 
 @receiver(post_delete, sender=UserRole)
 def log_user_role_revocation(sender, instance, **kwargs):
     actor = instance.assigned_by or instance.user
+    role_name = instance.role.role_name
     AuditLogModel.objects.create(
         user=instance.assigned_by if instance.assigned_by else None,
         action_type="update user",
         ip_address=get_current_ip() or "0.0.0.0",
         description=(
-            f"User {actor.email} (ID: {actor.id}) revoked '{instance.role.role_name}' "
-            f"from user {instance.user.email} (ID: {instance.user.id})"
+            f"Role removed: '{role_name}' from user {instance.user.email} (ID: {instance.user.id}) "
+            f"by {actor.email} (ID: {actor.id})"
         ),
+    )
+
+    transaction.on_commit(
+        lambda: NotificationModel.objects.create(
+            recipient=instance.user,
+            user=instance.assigned_by,
+            verb=f"role removed by admin: {role_name}",
+        )
     )
