@@ -128,8 +128,13 @@ class DocumentDetailView(APIView):
 
     def get_object(self, id):
         try:
-            if self.request.user.is_superuser:
+            if self.request.user.is_superuser or self.request.user.is_staff:
                 return DocumentModel.objects.all().get(pk=id)
+            owner_doc = DocumentModel.objects.filter(
+                pk=id, created_by=self.request.user
+            ).first()
+            if owner_doc:
+                return owner_doc
             return DocumentModel.objects.active_documents().get(pk=id)
         except (DocumentModel.DoesNotExist, ValueError):
             return None
@@ -261,6 +266,35 @@ class ShareDocumentView(APIView):
             serializer.save(document=document)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DocumentRestoreView(APIView):
+    permission_classes = [IsAuthenticatedUser]
+
+    def post(self, request, id):
+        try:
+            document = DocumentModel.objects.all().get(pk=id)
+        except (DocumentModel.DoesNotExist, ValueError):
+            return Response(
+                {"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        is_owner = str(document.created_by_id) == str(request.user.id)
+        if not (request.user.is_superuser or request.user.is_staff or is_owner):
+            return Response(
+                {"detail": "You do not have permission to restore this document."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not document.is_deleted:
+            return Response(
+                {"detail": "Document is already active."},
+                status=status.HTTP_200_OK,
+            )
+
+        document.restore()
+        serializer = DocumentSerializer(document, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
