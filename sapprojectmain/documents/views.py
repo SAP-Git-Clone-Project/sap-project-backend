@@ -187,7 +187,10 @@ class DocumentListCreateView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents().select_related('created_by')
         else:
-            documents = DocumentModel.objects.visible_documents(user=user)
+            documents = (
+                DocumentModel.objects.visible_documents(user=user)
+                | DocumentModel.objects.filter(created_by=user, is_deleted=True)
+            ).distinct().select_related('created_by')
 
         documents = documents.prefetch_related(
             Prefetch('versions', queryset=VersionsModel.objects.all().order_by('-version_number'), to_attr='prefetched_versions')
@@ -241,7 +244,10 @@ class DocumentListGetAllView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents()
         else:
-            documents = DocumentModel.objects.visible_documents(user=user)
+            documents = (
+                DocumentModel.objects.visible_documents(user=user)
+                | DocumentModel.objects.filter(created_by=user, is_deleted=True)
+            ).distinct()
 
         documents = documents.order_by("-updated_at")
 

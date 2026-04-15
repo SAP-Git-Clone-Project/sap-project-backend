@@ -319,42 +319,94 @@ class VersionDiffView(APIView):
     permission_classes = [HasDocumentReadPermission]
 
     def fetch_file_text(self, url):
-        if not url: return ""
+        """
+        Fetches text content from Cloudinary.
+        Added follow_redirects=True because Cloudinary URLs often redirect to CDN nodes.
+        """
+        if not url:
+            return None
         try:
-            # Add a small timeout
-            with httpx.Client() as client:
-                r = client.get(url, timeout=5.0)
-                return r.text if r.status_code == 200 else ""
-        except:
-            return ""
+            with httpx.Client(follow_redirects=True) as client:
+                headers = {"User-Agent": "Mozilla/5.0"}
+                r = client.get(url, timeout=10.0, headers=headers)
+                if r.status_code == 200:
+                    # Use r.text to get decoded string content
+                    return r.text
+                return None
+        except Exception as e:
+            print(f"Cloudinary Fetch Error: {str(e)}")
+            return None
 
     def get(self, request, pk):
+        # 1. Authorization
         version = get_authorized_version(request.user, pk)
-
-        binary_exts = ["pdf", "docx", "doc"]
-        raw_path = urlparse(version.file_path).path if version.file_path else ""
-        ext = raw_path.rsplit(".", 1)[-1].lower() if "." in raw_path else ""
-
-        if ext in binary_exts or not version.content:
+        is_owner = version.document.created_by_id == request.user.id
+        
+        can_compare = (
+            request.user.is_superuser
+            or is_owner
+            or can_review_document(request.user, version.document, version=version)
+        )
+        
+        if not can_compare:
             return Response(
-                {
-                    "can_compare": False,
-                    "message": "Direct text comparison not supported for this file type.",
-                    "file_url": get_signed_url(version.file_path),
-                }
+                {"detail": "Only superusers, document owner, or reviewers can compare versions."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        parent = version.parent_version
+        # 2. Setup Base Version
+        compare_to = request.query_params.get("compare_to")
+        base_version = version.parent_version
+        
+        if compare_to:
+            if str(compare_to) == str(version.id):
+                return Response(
+                    {"detail": "Current version cannot be compared with itself."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            base_version = get_object_or_404(
+                VersionsModel.objects.filter(document_id=version.document_id),
+                pk=compare_to,
+            )
+            if not request.user.is_superuser:
+                get_authorized_version(request.user, base_version.id)
 
-        current_file_text = self.fetch_file_text(get_signed_url(version.file_path))
-
-        if not parent:
+        # 3. Fetch New Content from Cloudinary
+        current_signed_url = get_signed_url(version.file_path)
+        current_file_text = self.fetch_file_text(current_signed_url)
+        
+        if current_file_text is None:
             return Response(
-                {"has_parent": False, "new_content": current_file_text, "diff": []}
+                {"can_compare": False, "message": f"Cloudinary error: Could not retrieve V{version.version_number}"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        parent_file_text = self.fetch_file_text(get_signed_url(parent.file_path))
+        current_filename = version.file_path.split('/')[-1] if version.file_path else "current.txt"
+        
+        if not base_version:
+            return Response({
+                "can_compare": True,
+                "has_parent": False, 
+                "new_v": version.version_number,
+                "new_filename": current_filename,
+                "new_content": current_file_text, 
+                "diff": []
+            })
 
+        # 4. Fetch Old Content from Cloudinary
+        base_signed_url = get_signed_url(base_version.file_path)
+        parent_file_text = self.fetch_file_text(base_signed_url)
+        
+        if parent_file_text is None:
+            return Response(
+                {"can_compare": False, "message": f"Cloudinary error: Could not retrieve V{base_version.version_number}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        base_filename = base_version.file_path.split('/')[-1] if base_version.file_path else "previous.txt"
+
+        # 5. Diffing Logic
+        # Clean lines to ensure \r\n doesn't mess up the comparison
         old_lines = parent_file_text.splitlines()
         new_lines = current_file_text.splitlines()
 
@@ -375,12 +427,16 @@ class VersionDiffView(APIView):
         return Response(
             {
                 "can_compare": True,
-                "old_v": parent.version_number,
+                "has_parent": True,
+                "old_v": base_version.version_number,
                 "new_v": version.version_number,
+                "old_version_id": str(base_version.id),
+                "new_version_id": str(version.id),
+                "old_filename": base_filename,
+                "new_filename": current_filename,
                 "diff": diff_output,
             }
         )
-
 
 class VersionExportView(APIView):
     permission_classes = [IsAuthenticated, HasDocumentReadPermission]

@@ -13,6 +13,8 @@ class VersionSerializer(serializers.ModelSerializer):
     document_owner_id = serializers.ReadOnlyField(source="document.created_by.id")
     document_title = serializers.ReadOnlyField(source="document.title")
     avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
+    
+    # Method fields for dynamic data
     signed_file_path = serializers.SerializerMethodField()
     current_user_document_role = serializers.SerializerMethodField()
     current_user_effective_permissions = serializers.SerializerMethodField()
@@ -97,8 +99,17 @@ class VersionSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
     def get_signed_file_path(self, obj):
-        from versions.views import get_signed_url
-        return get_signed_url(obj.file_path)
+        """
+        Uses the shared utility to get a Cloudinary signed URL.
+        Imported inside to prevent circular import issues.
+        """
+        if not obj.file_path:
+            return None
+        try:
+            from versions.views import get_signed_url
+            return get_signed_url(obj.file_path)
+        except Exception:
+            return obj.file_path
 
     def get_current_user_document_role(self, obj):
         request = self.context.get("request")
