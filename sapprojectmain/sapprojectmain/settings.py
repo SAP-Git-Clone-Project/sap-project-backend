@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "versions",
     "notifications.apps.NotificationsConfig",
     "core",
+    "user_roles",
 ]
 
 MIDDLEWARE = [

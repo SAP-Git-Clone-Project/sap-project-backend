@@ -36,6 +36,7 @@ urlpatterns = [
     ),  # Renamed for clarity
     path("api/reviews/", include("reviews.urls")),
     path("api/notifications/", include("notifications.urls")),  # New: The Inbox
+    path("api/roles/", include("user_roles.urls")),
     # Audit log
     path("api/audit-log/", include("audit_log.urls")),
 ]
