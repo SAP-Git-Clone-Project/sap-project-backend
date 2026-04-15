@@ -21,6 +21,8 @@ from versions.models import VersionsModel
 from .serializers import DocumentSerializer
 from document_permissions.serializers import DocumentPermissionSerializer
 from document_permissions.models import DocumentPermissionModel
+from core.rbac import user_has_global_role
+from user_roles.models import Role
 from rest_framework.pagination import PageNumberPagination
 
 
@@ -208,6 +210,13 @@ class DocumentListCreateView(APIView):
         if request.user.is_staff:
             return Response(
                 {"detail": "Staff users cannot create documents."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not request.user.is_superuser and not user_has_global_role(
+            request.user, Role.RoleName.AUTHOR
+        ):
+            return Response(
+                {"detail": "Only users with author role can create documents."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         serializer = DocumentSerializer(data=request.data, context={"request": request})

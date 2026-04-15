@@ -34,6 +34,7 @@ from core.permissions import (
     HasDocumentWritePermission,
     IsAuthenticatedUser,
 )
+from core.rbac import can_review_document
 from rest_framework.permissions import IsAuthenticated
 
 from django.contrib.auth import get_user_model
@@ -42,6 +43,8 @@ User = get_user_model()
 
 
 def get_signed_url(file_path: str) -> str:
+    if not file_path:
+        return ""
     ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
     resource_type = "image" if ext in {"jpg", "jpeg", "png", "gif", "webp"} else "raw"
 
@@ -277,7 +280,7 @@ class VersionDetailView(APIView):
 
     def get(self, request, pk):
         version = get_authorized_version(request.user, pk)
-        serializer = VersionSerializer(version)
+        serializer = VersionSerializer(version, context={"request": request})
         return Response(serializer.data)
 
     def patch(self, request, pk):
@@ -289,10 +292,12 @@ class VersionDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if "status" in request.data and not request.user.is_staff:
-            if request.data["status"] == VersionStatus.APPROVED:
+        if "status" in request.data and not (request.user.is_staff or request.user.is_superuser):
+            if request.data["status"] == VersionStatus.APPROVED and not can_review_document(
+                request.user, version.document, version=version
+            ):
                 return Response(
-                    {"error": "Only reviewers or staff can approve versions."},
+                    {"error": "Only eligible reviewers or staff can approve versions."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 

@@ -7,6 +7,7 @@ from document_permissions.models import DocumentPermissionModel
 from reviews.models import ReviewModel
 from versions.models import VersionsModel
 from .models import NotificationModel
+from user_roles.models import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -108,3 +109,17 @@ def notify_of_new_version(sender, instance, created, **kwargs):
                     target_document=instance.document,
                 )
             )
+
+
+@receiver(post_save, sender=UserRole)
+def notify_user_role_assigned(sender, instance, created, **kwargs):
+    if not created:
+        return
+    assigner = instance.assigned_by or instance.user
+    transaction.on_commit(
+        lambda: NotificationModel.objects.create(
+            recipient=instance.user,
+            user=assigner,
+            verb=f"assigned you global role '{instance.role.role_name}'",
+        )
+    )

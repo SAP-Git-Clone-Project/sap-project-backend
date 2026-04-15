@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import VersionsModel, VersionStatus
+from core.rbac import get_document_permissions, get_document_role
 
 class VersionSerializer(serializers.ModelSerializer):
     # NOTE: UI helpers to display human-readable names and version relationships
@@ -13,6 +14,8 @@ class VersionSerializer(serializers.ModelSerializer):
     document_title = serializers.ReadOnlyField(source="document.title")
     avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
     signed_file_path = serializers.SerializerMethodField()
+    current_user_document_role = serializers.SerializerMethodField()
+    current_user_effective_permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = VersionsModel
@@ -35,6 +38,8 @@ class VersionSerializer(serializers.ModelSerializer):
             "document_owner_id",
             "document_title",
             "avatar_url",
+            "current_user_document_role",
+            "current_user_effective_permissions",
         ]
         # SECURITY: System-critical fields are protected from direct user modification
         read_only_fields = [
@@ -94,3 +99,17 @@ class VersionSerializer(serializers.ModelSerializer):
     def get_signed_file_path(self, obj):
         from versions.views import get_signed_url
         return get_signed_url(obj.file_path)
+
+    def get_current_user_document_role(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+        return get_document_role(user, obj.document, version=obj)
+
+    def get_current_user_effective_permissions(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return []
+        return sorted(get_document_permissions(user, obj.document, version=obj))

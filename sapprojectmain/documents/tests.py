@@ -10,6 +10,7 @@ from versions.models import VersionsModel, VersionStatus
 from reviews.models import ReviewModel
 from unittest.mock import patch
 from django.urls import reverse
+from user_roles.models import Role, UserRole
 
 User = get_user_model()
 
@@ -28,6 +29,10 @@ class BaseSteelTestCase(APITestCase):
         )
         self.admin = User.objects.create_superuser(
             username="admin", email="admin@test.com", password="adminpass"
+        )
+        UserRole.objects.get_or_create(
+            user=self.owner,
+            role=Role.objects.get(role_name=Role.RoleName.AUTHOR),
         )
 
         # 2. JWT Auth Helpers
@@ -73,7 +78,8 @@ class DocumentBOLATests(BaseSteelTestCase):
     def test_hacker_cannot_list_owner_docs(self):
         self.set_auth(self.hacker_token)
         res = self.client.get("/api/documents/")
-        self.assertEqual(len(res.data), 0)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data.get("count"), 0)
 
     def test_uuid_brute_force_resistance(self):
         self.set_auth(self.hacker_token)

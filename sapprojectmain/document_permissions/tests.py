@@ -9,6 +9,7 @@ from rest_framework.test import APIClient
 
 from documents.models import DocumentModel
 from .models import DocumentPermissionModel
+from user_roles.models import Role, UserRole
 
 User = get_user_model()
 
@@ -56,6 +57,15 @@ class DocumentPermissionTestSetup(TestCase):
         self.superuser = User.objects.create_superuser(
             username="superuser", password="pass", email="super@test.com"
         )
+
+        self.author_role = Role.objects.get(role_name=Role.RoleName.AUTHOR)
+        self.writer_role = Role.objects.get(role_name=Role.RoleName.WRITER)
+        self.reviewer_role = Role.objects.get(role_name=Role.RoleName.REVIEWER)
+
+        UserRole.objects.get_or_create(user=self.owner, role=self.author_role)
+        UserRole.objects.get_or_create(user=self.write_user, role=self.writer_role)
+        UserRole.objects.get_or_create(user=self.delete_user, role=self.author_role)
+        UserRole.objects.get_or_create(user=self.read_user, role=Role.objects.get(role_name=Role.RoleName.READER))
 
         # --- Documents ---
         self.document = DocumentModel.objects.create(
@@ -146,6 +156,7 @@ class TestGrantPermissionBase(DocumentPermissionTestSetup):
             "document": str(self.document.id),
             "permission_type": "WRITE",
         }
+        UserRole.objects.get_or_create(user=self.new_user, role=self.writer_role)
         self.client.post(url, data)
         exists = DocumentPermissionModel.objects.filter(
             user=self.new_user, document=self.document
@@ -164,6 +175,7 @@ class TestGrantPermissionBase(DocumentPermissionTestSetup):
             "document": str(self.document.id),
             "permission_type": "WRITE",
         }
+        UserRole.objects.get_or_create(user=self.read_user, role=self.writer_role)
         response = self.client.post(url, data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["status"], "updated")

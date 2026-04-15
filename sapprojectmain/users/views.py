@@ -125,8 +125,19 @@ class UserSearchView(generics.ListAPIView):
     search_fields = ["username", "email"]
 
     def get_queryset(self):
-        # NOTE: Excludes the requesting user from search results
-        return UserModel.objects.exclude(id=self.request.user.id).filter(is_active=True)
+        queryset = UserModel.objects.exclude(id=self.request.user.id).filter(is_active=True)
+
+        role_name = self.request.query_params.get("role")
+        if role_name:
+            queryset = queryset.filter(user_roles__role__role_name=role_name)
+
+        document_id = self.request.query_params.get("document")
+        if document_id:
+            queryset = queryset.filter(
+                document_permissions__document_id=document_id
+            ).distinct()
+
+        return queryset.distinct()
 
 
 # --- 3. ADMIN & STAFF ACTIONS ---
@@ -276,6 +287,7 @@ class AdminDeleteUserView(APIView):
             [BlacklistedToken(token=token) for token in tokens],
             ignore_conflicts=True
         )
+        AuditLogModel.objects.filter(user=user_to_delete).update(user=None)
         user_to_delete.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -381,6 +393,7 @@ class UserDetailView(APIView):
 
         # DELETE RELATED TOKENS FIRST
         OutstandingToken.objects.filter(user=user).delete()
+        AuditLogModel.objects.filter(user=user).update(user=None)
 
         # 2. DELETE THE USER
         user.delete()
@@ -437,6 +450,7 @@ class CurrentUserDetailView(APIView):
 
         # 1. CLEAR TOKENS
         OutstandingToken.objects.filter(user=user).delete()
+        AuditLogModel.objects.filter(user=user).update(user=None)
 
         # 2. PERMANENT DELETE
         user.delete()

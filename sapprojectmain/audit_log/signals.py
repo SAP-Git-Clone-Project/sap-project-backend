@@ -9,6 +9,7 @@ from documents.models import DocumentModel
 from document_permissions.models import DocumentPermissionModel
 from versions.models import VersionsModel
 from reviews.models import ReviewModel
+from user_roles.models import UserRole
 
 # NOTE: Utilizing custom middleware helper to capture request-bound IP addresses
 from .middleware import get_current_ip
@@ -216,5 +217,34 @@ def log_review_activity(sender, instance, created, **kwargs):
             f"Reviewer {instance.reviewer.email} (ID: {instance.reviewer.id}) {instance.review_status} "
             f"version {instance.version.version_number} (ID: {instance.version.id}) "
             f"of document: '{instance.version.document.title}'"
+        ),
+    )
+
+
+@receiver(post_save, sender=UserRole)
+def log_user_role_assignment(sender, instance, created, **kwargs):
+    actor = instance.assigned_by or instance.user
+    action = "assign role" if created else "update role assignment"
+    AuditLogModel.objects.create(
+        user=instance.assigned_by if instance.assigned_by else None,
+        action_type="update user",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=(
+            f"User {actor.email} (ID: {actor.id}) {action} '{instance.role.role_name}' "
+            f"for user {instance.user.email} (ID: {instance.user.id})"
+        ),
+    )
+
+
+@receiver(post_delete, sender=UserRole)
+def log_user_role_revocation(sender, instance, **kwargs):
+    actor = instance.assigned_by or instance.user
+    AuditLogModel.objects.create(
+        user=instance.assigned_by if instance.assigned_by else None,
+        action_type="update user",
+        ip_address=get_current_ip() or "0.0.0.0",
+        description=(
+            f"User {actor.email} (ID: {actor.id}) revoked '{instance.role.role_name}' "
+            f"from user {instance.user.email} (ID: {instance.user.id})"
         ),
     )

@@ -115,6 +115,13 @@ class GetDocumentMembersView(generics.ListAPIView):
             Q(document_id=doc_id) | Q(version_id=doc_id)
         ).select_related("user", "document", "version").distinct()
 
+        if "version/" in self.request.path:
+            queryset = queryset.filter(permission_type="APPROVE")
+
+        role_filter = self.request.query_params.get("role")
+        if role_filter:
+            queryset = queryset.filter(user__user_roles__role__role_name=role_filter)
+
         if not user.is_staff and not user.is_superuser:
             # Check if the requesting user has any link to this doc/version
             if not queryset.filter(user=user).exists():

@@ -13,6 +13,8 @@ from versions.models import VersionsModel, VersionStatus
 from document_permissions.models import DocumentPermissionModel
 from django.contrib.auth import get_user_model
 from core.permissions import IsAuthenticatedUser, IsReviewerForDocument
+from core.rbac import can_review_document, can_write_document, user_has_global_role
+from user_roles.models import Role
 
 from django.contrib.auth import get_user_model
 
@@ -80,16 +82,28 @@ class ReviewCreateView(APIView):
             with transaction.atomic():
                 version = get_object_or_404(VersionsModel, pk=version_id)
 
-                # SECURITY: Only users with APPROVE permission on this document can be reviewers
-                has_approve_permission = DocumentPermissionModel.objects.filter(
-                    user=reviewer,
-                    document=version.document,
-                    permission_type="APPROVE"
-                ).exists()
-
-                if not has_approve_permission and not request.user.is_superuser:
+                if not request.user.is_superuser and not can_write_document(
+                    request.user, version.document
+                ):
                     return Response(
-                        {"error": "This user is not an authorized reviewer for this document."},
+                        {"error": "You do not have permission to assign reviewers."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
+                # SECURITY: Only users with APPROVE permission on this document can be reviewers
+                has_approve_permission = can_review_document(
+                    reviewer, version.document, version=version
+                )
+                has_global_reviewer_role = user_has_global_role(
+                    reviewer, Role.RoleName.REVIEWER
+                )
+
+                if (
+                    (not has_approve_permission or not has_global_reviewer_role)
+                    and not request.user.is_superuser
+                ):
+                    return Response(
+                        {"error": "This user is not an eligible reviewer for this document."},
                         status=status.HTTP_403_FORBIDDEN
                     )
 
