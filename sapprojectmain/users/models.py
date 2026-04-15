@@ -56,46 +56,12 @@ class UserModel(AbstractBaseUser, PermissionsMixin):
     # NOTE: Configures email as the primary login identifier
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
-
-    class RoleChoices(models.TextChoices):
-        VIEWER = "VIEWER", "Viewer"        # Read-only access across the system
-        EDITOR = "EDITOR", "Editor"        # Can create/edit documents
-        REVIEWER = "REVIEWER", "Reviewer"  # Can approve/reject versions
-        ADMIN = "ADMIN", "Admin"           # Staff-level system management
-        SUPERADMIN = "SUPERADMIN", "Super Admin"  # Full access
- 
-    class UserRoleModel(models.Model):
-        id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
- 
-        user = models.OneToOneField(
-            settings.AUTH_USER_MODEL,
-            on_delete=models.CASCADE,
-            related_name="user_role",
-    )
- 
-        role = models.CharField(
-            max_length=20,
-            choices=RoleChoices.choices,
-            default=RoleChoices.VIEWER,
-    )
- 
-        assigned_by = models.ForeignKey(
-            settings.AUTH_USER_MODEL,
-            on_delete=models.SET_NULL,
-            null=True,
-            blank=True,
-            related_name="roles_assigned",
-    )
-
-    assigned_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:
         db_table = "users"
-        ordering = ["assigned_at"]
 
     def __str__(self):
         # NOTE: Returns email for user identification in admin and logs
-        return f"{self.user.email} → {self.role}"
+        return self.user.email
 
     
