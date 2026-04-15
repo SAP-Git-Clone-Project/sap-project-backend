@@ -5,7 +5,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 import re
 
-from .models import UserModel
+from .models import UserModel , UserRoleModel, RoleChoices
 
 # VALIDATORS
 # NOTE: Regex to ensure usernames are URL-safe and start with a letter
@@ -148,3 +148,61 @@ class UserSearchSerializer(serializers.ModelSerializer):
         model = UserModel
         fields = ["id", "username", "email", "first_name", "last_name", "avatar"]
         read_only_fields = ["id", "username", "email"]
+
+class UserRoleSerializer(serializers.ModelSerializer): 
+    
+    user_email = serializers.EmailField(source="user.email", read_only=True)
+    user_username = serializers.CharField(source="user.username", read_only=True)
+    user_first_name = serializers.CharField(source="user.first_name", read_only=True)
+    user_last_name = serializers.CharField(source="user.last_name", read_only=True)
+    user_avatar = serializers.URLField(source="user.avatar", read_only=True)
+ 
+    # Assigner info
+    assigned_by_email = serializers.EmailField(
+        source="assigned_by.email", read_only=True
+    )
+
+    class Meta:
+        model = UserRoleModel
+        fields = [
+            "id",
+            "user",
+            "user_email",
+            "user_username",
+            "user_first_name",
+            "user_last_name",
+            "user_avatar",
+            "role",
+            "assigned_by",
+            "assigned_by_email",
+            "assigned_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "assigned_by", "assigned_at", "updated_at"]
+
+class AssignRoleSerializer(serializers.Serializer):
+ 
+    user_id = serializers.UUIDField()
+    role = serializers.ChoiceField(choices=RoleChoices.choices)
+ 
+    def validate_user_id(self, value):
+        if not UserModel.objects.filter(id=value).exists():
+            raise serializers.ValidationError("User not found.")
+        return value
+ 
+    def save(self, assigned_by):
+        user = UserModel.objects.get(id=self.validated_data["user_id"])
+        role = self.validated_data["role"]
+ 
+        obj, _ = UserRoleModel.objects.update_or_create(
+            user=user,
+            defaults={"role": role, "assigned_by": assigned_by},
+        )
+        return obj
+
+class MyRoleSerializer(serializers.ModelSerializer):
+ 
+    class Meta:
+        model = UserRoleModel
+        fields = ["role", "assigned_at"]
+        read_only_fields = fields
