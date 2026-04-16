@@ -104,16 +104,8 @@ class HasDocumentReadPermission(BasePermission):
         if hasattr(obj, "created_by") and obj.created_by == user:
             return True
 
-        # Determine if we are looking at a Document or a Version
-        doc = None
-        target_version = None
-
-        if hasattr(obj, "document_permissions"):  # It's a DocumentModel
-            doc = obj
-            target_version = None
-        elif hasattr(obj, "document"):  # It's a VersionModel
-            doc = obj.document
-            target_version = obj
+        doc = getattr(obj, "document", obj) if hasattr(obj, "document") or hasattr(obj, "document_permissions") else None
+        target_version = obj if doc is not None and doc is not obj else None
 
         if doc:
             permission_query = Q(user=user)

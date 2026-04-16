@@ -3,6 +3,7 @@ import hashlib
 import difflib
 import cloudinary.uploader
 import io
+import zipfile
 from urllib.parse import urlparse
 import httpx
 import requests
@@ -15,7 +16,8 @@ from django.db.models import Q
 from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from pdfminer.high_level import extract_text
+from django.utils import timezone
+from django.utils.text import slugify
 
 import puremagic as magic
 from django.core.exceptions import ValidationError
@@ -29,6 +31,8 @@ import traceback
 import cloudinary.utils
 import time
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from core.permissions import (
     HasDocumentReadPermission,
@@ -91,7 +95,79 @@ def get_authorized_version(user, pk):
     )
 
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "png", "jpg", "jpeg"}
+# Uploads: extension must match detected content (magic bytes), not just one OR the other.
+ALLOWED_EXTENSIONS = frozenset({"pdf", "doc", "docx", "txt"})
+
+# Declared extension -> MIME types that are acceptable for that extension (normalized, no params).
+EXTENSION_EXPECTED_MIMES = {
+    "pdf": frozenset({"application/pdf"}),
+    "doc": frozenset({"application/msword"}),
+    "docx": frozenset(
+        {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+    ),
+    "txt": frozenset({"text/plain", "text/markdown"}),
+}
+
+# Never treat as documents/images regardless of filename.
+BLOCKLISTED_MIMES = frozenset(
+    {
+        "text/html",
+        "application/javascript",
+        "text/javascript",
+        "application/x-javascript",
+        "application/x-msdownload",
+        "application/x-dosexec",
+        "application/x-executable",
+    }
+)
+
+
+def _normalize_mime(mime: str) -> str:
+    if not mime:
+        return ""
+    return mime.split(";", 1)[0].strip().lower()
+
+
+def _sniff_mime_from_bytes(chunk: bytes) -> str | None:
+    """Fallback when magic returns octet-stream; signatures for allowed types only."""
+    if not chunk:
+        return None
+    if chunk.startswith(b"%PDF"):
+        return "application/pdf"
+    if chunk.startswith(b"PK\x03\x04"):
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(chunk), "r")
+            names = set(zf.namelist())
+            zf.close()
+            if "[Content_Types].xml" in names and any(
+                n.startswith("word/") for n in names
+            ):
+                return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        except Exception:
+            return None
+        return None
+    if chunk.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return "application/msword"
+    return None
+
+
+def _looks_like_plain_text(chunk: bytes) -> bool:
+    if not chunk:
+        return True
+    if b"\x00" in chunk[:8192]:
+        return False
+    sample = chunk[:8192]
+    try:
+        s = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            s = sample.decode("latin-1")
+        except Exception:
+            return False
+    if not s.strip():
+        return True
+    printable = sum(1 for c in s if c.isprintable() or c in "\n\r\t")
+    return printable / max(len(s), 1) > 0.95
 
 
 class DocumentVersionHandler(APIView):
@@ -101,42 +177,62 @@ class DocumentVersionHandler(APIView):
         return [HasDocumentWritePermission()]
 
     def validate_is_text_or_asset(self, file):
+        """
+        Extension and content must agree: magic bytes (and sniff fallback) must match
+        the declared filename extension. Prevents e.g. malware.txt with real PE binary,
+        or report.pdf with text/html payload.
+        """
+        filename = getattr(file, "name", "") or ""
+        if "." not in filename:
+            raise ValidationError(
+                "File type not allowed: missing extension; declare a real file name."
+            )
+
+        ext = filename.rsplit(".", 1)[-1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise ValidationError(
+                f"File type not allowed: extension '.{ext}' is not permitted."
+            )
+
         chunk = file.read(8192)
+        file.seek(0)
+
+        if not chunk:
+            raise ValidationError(
+                "File type not allowed: empty file cannot be validated."
+            )
 
         try:
             matches = magic.magic_string(chunk)
-            mime_type = matches[0].mime_type if matches else None
-            if not mime_type:
-                # fall back to checking the file extension via puremagic
-                mime_type = magic.from_file(file.name)
+            mime_raw = matches[0].mime_type if matches else None
         except Exception:
-            mime_type = "application/octet-stream"
+            mime_raw = None
 
-        file.seek(0)
+        mime_norm = _normalize_mime(mime_raw or "")
 
-        allowed_mimes = [
-            # Documents
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            # Images (Existing + New)
-            "image/jpeg",  # Covers .jpg and .jpeg
-            "image/png",  # .png
-            "image/gif",  # .gif
-            "image/webp",  # .webp
-            "image/svg+xml",  # .svg (Note the +xml suffix)
-        ]
-
-        if not (
-            mime_type.startswith("text/")
-            or mime_type in allowed_mimes
-            or file.name.endswith(".doc")
-            or file.name.endswith(".docx")
-            or file.name.endswith(".pdf")
-            or file.name.endswith(".txt")
-        ):
+        if mime_norm in BLOCKLISTED_MIMES:
             raise ValidationError(
-                f"Asset Security Breach: File type '{mime_type}' is not authorized."
+                f"File type not allowed: content looks like '{mime_norm}' "
+                f"which is not permitted for uploads."
+            )
+
+        if not mime_norm or mime_norm == "application/octet-stream":
+            sniffed = _sniff_mime_from_bytes(chunk)
+            if sniffed:
+                mime_norm = sniffed
+            elif ext == "txt" and _looks_like_plain_text(chunk):
+                mime_norm = "text/plain"
+            else:
+                mime_norm = mime_norm or "application/octet-stream"
+
+        expected = EXTENSION_EXPECTED_MIMES.get(ext)
+        if not expected:
+            raise ValidationError(f"File type not allowed: extension '.{ext}' is not permitted.")
+
+        if mime_norm not in expected:
+            raise ValidationError(
+                f"File type not allowed: extension '.{ext}' does not match content "
+                f"(detected '{mime_norm}'). Possible spoofing."
             )
 
     def get(self, request, id):
@@ -179,23 +275,9 @@ class DocumentVersionHandler(APIView):
 
     def get_cloudinary_resource_type(self, file_obj):
         """
-        Cloudinary has three resource types:
-        - 'image': actual images (jpg, png, gif, webp...)
-        - 'video': video/audio files
-        - 'raw':   everything else (pdf, docx, txt, csv...)
+        Only .doc / .docx / .pdf / .txt are allowed after validation — upload as raw.
         """
-        image_mimes = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-
-        chunk = file_obj.read(8192)
-        file_obj.seek(0)
-
-        try:
-            matches = magic.magic_string(chunk)
-            mime_type = matches[0].mime_type if matches else "application/octet-stream"
-        except Exception:
-            mime_type = "application/octet-stream"
-
-        return "image" if mime_type in image_mimes else "raw"
+        return "raw"
 
     def post(self, request, id):
         try:
@@ -273,6 +355,10 @@ class DocumentVersionHandler(APIView):
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+        except ValidationError as e:
+            messages = getattr(e, "messages", None)
+            msg = messages[0] if messages else str(e)
+            return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as ve:
             print(ve)
 
@@ -467,22 +553,70 @@ class VersionExportView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        filename = f"{version.document.title}_v{version.version_number}"
+        try:
+            tz_sofia = ZoneInfo("Europe/Sofia")
+        except Exception:
+            tz_sofia = timezone.get_fixed_timezone(120)
+
+        def format_uk_datetime(dt_value):
+            if not dt_value:
+                return "N/A"
+            if dt_value.tzinfo is None:
+                dt_value = dt_value.replace(tzinfo=tz_sofia)
+            return dt_value.astimezone(tz_sofia).strftime("%d/%m/%Y %H:%M:%S")
+
+        def format_file_size_bytes(size):
+            if size is None:
+                return "N/A"
+            return f"{size} B"
+
+        created_by = version.created_by
+
+        def get_user_full_name(user_obj):
+            if not user_obj:
+                return "N/A"
+            if hasattr(user_obj, "get_full_name") and callable(user_obj.get_full_name):
+                full = (user_obj.get_full_name() or "").strip()
+                if full:
+                    return full
+            first = (getattr(user_obj, "first_name", "") or "").strip()
+            last = (getattr(user_obj, "last_name", "") or "").strip()
+            combined = f"{first} {last}".strip()
+            return combined or "N/A"
+
+        created_by_details = (
+            f"Username: {created_by.username} | User full name: {get_user_full_name(created_by)} | "
+            f"User email: {created_by.email or 'N/A'} | User ID: {created_by.id}"
+            if created_by
+            else "N/A"
+        )
+
+        export_generated_at = datetime.now(tz_sofia).strftime("%d/%m/%Y %H:%M:%S")
+        created_at_display = format_uk_datetime(version.created_at)
+        file_size_display = format_file_size_bytes(version.file_size)
+
+        safe_title = re.sub(r'[\\/:*?"<>|]+', " ", version.document.title).strip()
+        safe_title = re.sub(r"\s+", " ", safe_title)
+        ascii_title = slugify(safe_title)
+        if not ascii_title:
+            ascii_title = "document"
+        filename = f"{ascii_title} v{version.version_number}"
 
         file_url = version.file_path or "N/A"
 
         if file_format == "txt":
             content = (
                 f"DOCUMENT EXPORT\n"
+                f"- {export_generated_at}\n"
                 f"{'-'*40}\n"
                 f"Document Title: {version.document.title}\n"
                 f"Version: {version.version_number}\n"
                 f"Status: {version.status}\n"
-                f"Created By: {version.created_by.username if version.created_by else 'N/A'}\n"
-                f"Created At: {version.created_at}\n"
+                f"Created By: {created_by_details}\n"
+                f"Version Created At: {created_at_display} (BG Time)\n"
                 f"Is Active: {version.is_active}\n"
                 f"File URL: {file_url}\n"
-                f"File Size: {version.file_size or 'N/A'}\n"
+                f"File Size: {file_size_display}\n"
                 f"Checksum: {version.checksum or 'N/A'}\n"
                 f"Parent Version: {version.parent_version_id or 'None'}\n"
                 f"{'-'*40}\n"
@@ -495,24 +629,67 @@ class VersionExportView(APIView):
         if file_format == "pdf":
             buffer = io.BytesIO()
             c = canvas.Canvas(buffer, pagesize=letter)
+            page_width, page_height = letter
 
-            y = 750
+            left_margin = 50
+            right_margin = 50
+            max_text_width = page_width - left_margin - right_margin
+            y = page_height - 40
 
             def line(text, font="Helvetica", size=10, gap=15):
                 nonlocal y
                 c.setFont(font, size)
-                c.drawString(50, y, text)
-                y -= gap
+                words = str(text).split(" ")
+                wrapped_lines = []
+                current_line = ""
+
+                for word in words:
+                    # Break single long tokens (e.g. URLs) so they never overflow margins.
+                    if c.stringWidth(word, font, size) > max_text_width:
+                        if current_line:
+                            wrapped_lines.append(current_line)
+                            current_line = ""
+                        chunk = ""
+                        for ch in word:
+                            if c.stringWidth(f"{chunk}{ch}", font, size) <= max_text_width:
+                                chunk = f"{chunk}{ch}"
+                            else:
+                                wrapped_lines.append(chunk)
+                                chunk = ch
+                        if chunk:
+                            wrapped_lines.append(chunk)
+                    else:
+                        candidate = word if not current_line else f"{current_line} {word}"
+                        if c.stringWidth(candidate, font, size) <= max_text_width:
+                            current_line = candidate
+                        else:
+                            if current_line:
+                                wrapped_lines.append(current_line)
+                            current_line = word
+                if current_line:
+                    wrapped_lines.append(current_line)
+
+                if not wrapped_lines:
+                    wrapped_lines = [""]
+
+                for wrapped in wrapped_lines:
+                    if y <= 45:
+                        c.showPage()
+                        y = page_height - 40
+                        c.setFont(font, size)
+                    c.drawString(left_margin, y, wrapped)
+                    y -= gap
 
             line(f"DOCUMENT EXPORT", "Helvetica-Bold", 14, 20)
+            line(f"- {export_generated_at}")
             line(f"Document: {version.document.title}")
             line(f"Version: {version.version_number}")
             line(f"Status: {version.status}")
-            line(f"Created By: {version.created_by.username if version.created_by else 'N/A'}")
-            line(f"Created At: {version.created_at}")
+            line(f"Created By: {created_by_details}")
+            line(f"Version Created At: {created_at_display} (BG Time)")
             line(f"Is Active: {version.is_active}")
             line(f"File URL: {file_url}")
-            line(f"File Size: {version.file_size or 'N/A'}")
+            line(f"File Size: {file_size_display}")
             line(f"Checksum: {version.checksum or 'N/A'}")
             line(f"Parent Version: {version.parent_version_id or 'None'}")
 
