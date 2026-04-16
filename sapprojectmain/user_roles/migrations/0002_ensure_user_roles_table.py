@@ -2,6 +2,11 @@ from django.db import migrations
 
 
 def ensure_user_roles_table(apps, schema_editor):
+    # Tests often run on SQLite, while production may be Postgres.
+    # This migration uses Postgres-specific features (pgcrypto, uuid types),
+    # so it must be a no-op on non-Postgres backends.
+    if schema_editor.connection.vendor != "postgresql":
+        return
     with schema_editor.connection.cursor() as cursor:
         cursor.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto";')
         cursor.execute(
@@ -36,6 +41,8 @@ def ensure_user_roles_table(apps, schema_editor):
 
 
 def seed_default_reader_for_existing_users(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
     with schema_editor.connection.cursor() as cursor:
         cursor.execute("SELECT id FROM roles WHERE role_name = 'reader' LIMIT 1;")
         row = cursor.fetchone()

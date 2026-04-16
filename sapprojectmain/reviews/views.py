@@ -8,7 +8,7 @@ from django.db import transaction
 
 # Model/Serializer Imports
 from .models import ReviewModel, ReviewStatus
-from .serializers import ReviewSerializer
+from .serializers import ReviewSerializer, ReviewInboxSerializer
 from versions.models import VersionsModel, VersionStatus
 from document_permissions.models import DocumentPermissionModel
 from django.contrib.auth import get_user_model
@@ -137,15 +137,36 @@ class ReviewListView(APIView):
 
     def get(self, request):
         user = request.user
+        version_id = request.query_params.get("version")
+
+        # PERF: Always select_related needed rows to avoid N+1 during serialization.
+        base_qs = ReviewModel.objects.select_related(
+            "reviewer",
+            "version",
+            "version__created_by",
+            "version__document",
+            "version__document__created_by",
+            # for old_version summary (parent chain)
+            "version__parent_version",
+            "version__parent_version__created_by",
+            "version__parent_version__document",
+            "version__parent_version__document__created_by",
+            "version__parent_version__parent_version",
+        )
 
         if user.is_staff or user.is_superuser:
-            reviews = ReviewModel.objects.all()
+            reviews = base_qs.all()
         else:
-            reviews = ReviewModel.objects.filter(reviewer_id=user).select_related("version").distinct()
+            reviews = base_qs.filter(reviewer_id=user).distinct()
+
+        # Optional filter: avoid fetching *all reviews* when a page only needs one version's reviews.
+        if version_id:
+            reviews = reviews.filter(version_id=version_id)
 
         # NOTE: Default to pending only, pass ?all=true for full history/audit
         if request.query_params.get("all") != "true":
             reviews = reviews.filter(review_status=ReviewStatus.PENDING)
 
-        serializer = ReviewSerializer(reviews, many=True)
+        # PERF: Inbox lists can be large; use lightweight serializer.
+        serializer = ReviewInboxSerializer(reviews, many=True, context={"request": request})
         return Response(serializer.data)

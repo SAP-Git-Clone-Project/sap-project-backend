@@ -124,3 +124,43 @@ class VersionSerializer(serializers.ModelSerializer):
         if not user or not user.is_authenticated:
             return []
         return sorted(get_document_permissions(user, obj.document, version=obj))
+
+
+class VersionSummarySerializer(serializers.ModelSerializer):
+    """
+    PERF: Lightweight representation for list endpoints (documents list, review inbox).
+    Avoids large payloads (full `content`) and expensive per-item work (signed URLs).
+    """
+
+    creator_name = serializers.ReadOnlyField(source="created_by.username")
+    avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
+    parent_version_number = serializers.ReadOnlyField(source="parent_version.version_number")
+    document_title = serializers.ReadOnlyField(source="document.title")
+    document_id = serializers.ReadOnlyField(source="document.id")
+    content = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VersionsModel
+        fields = [
+            "id",
+            "document_id",
+            "document_title",
+            "created_by",
+            "creator_name",
+            "avatar_url",
+            "version_number",
+            "status",
+            "created_at",
+            "is_active",
+            "parent_version",
+            "parent_version_number",
+            "content",
+        ]
+
+    def get_content(self, obj):
+        # Keep Review inbox fast: return a short preview, not the full blob.
+        text = obj.content or ""
+        max_len = 240
+        if len(text) <= max_len:
+            return text
+        return text[:max_len].rstrip() + "…"

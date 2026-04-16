@@ -59,6 +59,10 @@ class VersionsModel(models.Model):
         # NOTE: Ensures no duplicate version numbers exist for a single document
         unique_together = ("document", "version_number")
         ordering = ["-version_number"]
+        indexes = [
+            # PERF: Speeds up "active version for document" lookup
+            models.Index(fields=["document", "is_active"]),
+        ]
 
     def __str__(self):
         # NOTE: Formats version for admin display and logging

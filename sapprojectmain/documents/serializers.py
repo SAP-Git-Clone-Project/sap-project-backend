@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import DocumentModel
-from versions.serializers import VersionSerializer
+from versions.serializers import VersionSummarySerializer
 from core.rbac import get_document_permissions, get_document_role
 
 
@@ -28,12 +28,54 @@ class DocumentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
+    def _get_prefetched_permission_types(self, obj):
+        """
+        PERF: Views may attach the current user's permission rows via
+        `prefetched_current_user_permissions` to avoid N+1 queries.
+        """
+        perms = getattr(obj, "prefetched_current_user_permissions", None)
+        if perms is None:
+            return None
+        return {p.permission_type for p in perms}
+
     def get_active_version(self, obj):
-        # First, try to get the active version
-        versions_list = getattr(obj, 'prefetched_versions', list(obj.versions.all()))
-        active_v = next((v for v in versions_list if v.is_active), None)
+        # Stats endpoints still need accurate status counts:
+        # use active version when present, otherwise latest version.
+        if self.context.get("stats_mode") is True:
+            active_versions = getattr(obj, "prefetched_active_versions", None)
+            if active_versions:
+                return VersionSummarySerializer(
+                    active_versions[0], context=self.context
+                ).data
+            latest_v = getattr(obj, "_latest_version", None)
+            if latest_v is None:
+                latest_v = (
+                    obj.versions.select_related(
+                        "created_by", "parent_version", "document"
+                    )
+                    .order_by("-version_number")
+                    .first()
+                )
+            return (
+                VersionSummarySerializer(latest_v, context=self.context).data
+                if latest_v
+                else None
+            )
+
+        # First, try the prefetched active version (fast path for list views)
+        active_versions = getattr(obj, "prefetched_active_versions", None)
+        if active_versions:
+            # there should be max 1 active version per document
+            return VersionSummarySerializer(
+                active_versions[0], context=self.context
+            ).data
+
+        # Fallback: instance/detail views may not prefetch
+        active_v = obj.versions.filter(is_active=True).select_related(
+            "created_by", "parent_version", "document"
+        ).first()
         if active_v:
-            return VersionSerializer(active_v).data
+            return VersionSummarySerializer(active_v, context=self.context).data
         
         request = self.context.get("request", None)
         user = getattr(request, "user", None)
@@ -42,12 +84,25 @@ class DocumentSerializer(serializers.ModelSerializer):
         if user:
             is_owner = obj.created_by_id == user.id
             is_superuser = user.is_superuser
-            has_perm = getattr(obj, 'user_has_permission_annotated', False)
+            prefetched_perm_types = self._get_prefetched_permission_types(obj)
+            has_perm = (
+                bool(prefetched_perm_types)
+                if prefetched_perm_types is not None
+                else getattr(obj, "user_has_permission_annotated", False)
+            )
 
             if is_owner or is_superuser or has_perm:
-                if versions_list:
-                    latest_v = sorted(versions_list, key=lambda v: v.version_number, reverse=True)[0]
-                    return VersionSerializer(latest_v).data
+                latest_v = getattr(obj, "_latest_version", None)
+                if latest_v is None:
+                    latest_v = (
+                        obj.versions.select_related(
+                            "created_by", "parent_version", "document"
+                        )
+                        .order_by("-version_number")
+                        .first()
+                    )
+                if latest_v:
+                    return VersionSummarySerializer(latest_v, context=self.context).data
                 
         return None
 
@@ -56,13 +111,27 @@ class DocumentSerializer(serializers.ModelSerializer):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return None
-        return get_document_role(user, obj)
+        prefetched_perm_types = self._get_prefetched_permission_types(obj)
+        if prefetched_perm_types is None:
+            return get_document_role(user, obj)
+
+        # Mirror priority logic in core.rbac.get_document_role without hitting DB
+        priority = ["DELETE", "WRITE", "APPROVE", "READ"]
+        from core.rbac import PERMISSION_TO_ROLE
+
+        for permission in priority:
+            if permission in prefetched_perm_types:
+                return PERMISSION_TO_ROLE.get(permission)
+        return None
 
     def get_current_user_effective_permissions(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return []
+        prefetched_perm_types = self._get_prefetched_permission_types(obj)
+        if prefetched_perm_types is not None:
+            return sorted(prefetched_perm_types)
         return sorted(get_document_permissions(user, obj))
 
     # Optional: title validation and creation/update logic

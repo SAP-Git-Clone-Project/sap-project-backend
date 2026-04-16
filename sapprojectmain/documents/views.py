@@ -24,6 +24,7 @@ from document_permissions.models import DocumentPermissionModel
 from core.rbac import user_has_global_role
 from user_roles.models import Role
 from rest_framework.pagination import PageNumberPagination
+from itertools import groupby
 
 
 class DocumentPagination(PageNumberPagination):
@@ -192,9 +193,31 @@ class DocumentListCreateView(APIView):
                 | DocumentModel.objects.filter(created_by=user, is_deleted=True)
             ).distinct().select_related('created_by')
 
-        documents = documents.prefetch_related(
-            Prefetch('versions', queryset=VersionsModel.objects.all().order_by('-version_number'), to_attr='prefetched_versions')
-        ).order_by("-updated_at")
+        # PERF:
+        # - Fetch only what the list view needs for "active_version" rendering.
+        # - Prefetch current user's permission rows once to avoid N+1 in serializer.
+        documents = (
+            documents.select_related("created_by")
+            .prefetch_related(
+                Prefetch(
+                    "versions",
+                    queryset=VersionsModel.objects.filter(is_active=True).select_related(
+                        "created_by",
+                        "parent_version",
+                        "document",
+                    ),
+                    to_attr="prefetched_active_versions",
+                ),
+                Prefetch(
+                    "document_permissions",
+                    queryset=DocumentPermissionModel.objects.filter(
+                        user=user, version__isnull=True
+                    ).only("document_id", "permission_type", "user_id", "version_id"),
+                    to_attr="prefetched_current_user_permissions",
+                ),
+            )
+            .order_by("-updated_at")
+        )
 
         status = self.request.query_params.get("status")
         if status:
@@ -211,6 +234,23 @@ class DocumentListCreateView(APIView):
         # Apply pagination
         paginator = DocumentPagination()
         page = paginator.paginate_queryset(documents, request)
+
+        # PERF: If a document has no active version, the serializer may need the latest version
+        # (for owners/superusers/users with permissions). Fetch those latest versions in bulk.
+        page_docs = list(page or [])
+        if page_docs:
+            doc_ids = [d.id for d in page_docs]
+            latest_versions = (
+                VersionsModel.objects.filter(document_id__in=doc_ids)
+                .select_related("created_by", "parent_version", "document")
+                .order_by("document_id", "-version_number")
+            )
+            latest_by_doc_id = {}
+            for doc_id, versions in groupby(latest_versions, key=lambda v: v.document_id):
+                latest_by_doc_id[doc_id] = next(versions, None)
+            for d in page_docs:
+                d._latest_version = latest_by_doc_id.get(d.id)
+
         serializer = DocumentSerializer(page, many=True, context={"request": request})
         return paginator.get_paginated_response(serializer.data)
 
@@ -249,9 +289,51 @@ class DocumentListGetAllView(APIView):
                 | DocumentModel.objects.filter(created_by=user, is_deleted=True)
             ).distinct()
 
-        documents = documents.order_by("-updated_at")
+        # PERF: This endpoint is used by the frontend for dashboard stats.
+        # Keep it lightweight: only prefetch active versions + current user perms,
+        # and avoid expensive "latest version fallback" work in the serializer.
+        documents = (
+            documents.select_related("created_by")
+            .prefetch_related(
+                Prefetch(
+                    "versions",
+                    queryset=VersionsModel.objects.filter(is_active=True).select_related(
+                        "created_by",
+                        "parent_version",
+                        "document",
+                    ),
+                    to_attr="prefetched_active_versions",
+                ),
+                Prefetch(
+                    "document_permissions",
+                    queryset=DocumentPermissionModel.objects.filter(
+                        user=user, version__isnull=True
+                    ).only("document_id", "permission_type", "user_id", "version_id"),
+                    to_attr="prefetched_current_user_permissions",
+                ),
+            )
+            .order_by("-updated_at")
+        )
 
-        serializer = DocumentSerializer(documents, many=True, context={'request': request})
+        # PERF: provide latest version in bulk for stats_mode fallback
+        # (active version if present, else latest by version_number).
+        doc_list = list(documents)
+        if doc_list:
+            doc_ids = [d.id for d in doc_list]
+            latest_versions = (
+                VersionsModel.objects.filter(document_id__in=doc_ids)
+                .select_related("created_by", "parent_version", "document")
+                .order_by("document_id", "-version_number")
+            )
+            latest_by_doc_id = {}
+            for doc_id, versions in groupby(latest_versions, key=lambda v: v.document_id):
+                latest_by_doc_id[doc_id] = next(versions, None)
+            for d in doc_list:
+                d._latest_version = latest_by_doc_id.get(d.id)
+
+        serializer = DocumentSerializer(
+            doc_list, many=True, context={"request": request, "stats_mode": True}
+        )
         return Response(serializer.data)
 
 

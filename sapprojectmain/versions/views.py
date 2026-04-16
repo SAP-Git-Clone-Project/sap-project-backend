@@ -154,11 +154,16 @@ class DocumentVersionHandler(APIView):
             id=id,
         )
 
-        versions = VersionsModel.objects.filter(document=doc).select_related(
-            "created_by", 
-            "document", 
-            "parent_version"
-        ).order_by("-version_number")
+        versions = (
+            VersionsModel.objects.filter(document=doc)
+            .select_related(
+                "created_by",
+                "document",
+                "document__created_by",
+                "parent_version",
+            )
+            .order_by("-version_number")
+        )
 
         is_owner = (
             request.user.is_superuser or 
