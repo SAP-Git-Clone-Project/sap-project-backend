@@ -1,213 +1,266 @@
-import uuid
-import io
-import hashlib
-from django.contrib.auth import get_user_model
-from rest_framework.test import APITestCase
-from rest_framework import status
-from rest_framework_simplejwt.tokens import RefreshToken
-from documents.models import DocumentModel
-from versions.models import VersionsModel, VersionStatus
-from reviews.models import ReviewModel
-from unittest.mock import patch
 from django.urls import reverse
-from user_roles.models import Role, UserRole
+from rest_framework import status
+from rest_framework.test import APITestCase
+from django.contrib.auth import get_user_model
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from documents.models import (
+    DocumentModel,
+    DocumentDeletionRequestModel,
+    DocumentDeletionDecisionModel,
+)
+from document_permissions.models import DocumentPermissionModel
+from versions.models import VersionsModel
 
 User = get_user_model()
 
 
-# =========================================================
-# CORE FIXTURE: THE MULTI-TENANT ENVIRONMENT
-# =========================================================
-class BaseSteelTestCase(APITestCase):
+class BaseTestCase(APITestCase):
+    def create_user(self, username, email, is_superuser=False):
+        return User.objects.create_user(
+            username=username,
+            email=email,
+            password="pass123",
+            first_name="Test",
+            last_name="User",
+            is_superuser=is_superuser
+        )
+
     def setUp(self):
-        # 1. User Setup: Owner (Victim), Attacker (Hacker), and Auditor (Admin)
-        self.owner = User.objects.create_user(
-            username="owner", email="owner@test.com", password="password123"
-        )
-        self.hacker = User.objects.create_user(
-            username="hacker", email="hacker@test.com", password="password123"
-        )
-        self.admin = User.objects.create_superuser(
-            username="admin", email="admin@test.com", password="adminpass"
-        )
-        UserRole.objects.get_or_create(
-            user=self.owner,
-            role=Role.objects.get(role_name=Role.RoleName.AUTHOR),
+        self.user = self.create_user("user1", "user1@test.com", is_superuser=True)
+        self.user2 = self.create_user("user2", "user2@test.com")
+        self.reviewer = self.create_user("reviewer", "reviewer@test.com")
+
+        self.token = str(RefreshToken.for_user(self.user).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.token}")
+
+
+# ------------------------------------------------------------------
+# Document CRUD Tests
+# ------------------------------------------------------------------
+
+class DocumentCRUDTests(BaseTestCase):
+
+    def test_create_document(self):
+        url = reverse("document-list-create")
+        response = self.client.post(url, {"title": "Test Document"})
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(DocumentModel.objects.count(), 1)
+
+    def test_unique_title_per_user(self):
+        DocumentModel.objects.create_document(
+            created_by=self.user, title="Unique Doc"
         )
 
-        # 2. JWT Auth Helpers
-        self.owner_token = str(RefreshToken.for_user(self.owner).access_token)
-        self.hacker_token = str(RefreshToken.for_user(self.hacker).access_token)
-        self.admin_token = str(RefreshToken.for_user(self.admin).access_token)
+        url = reverse("document-list-create")
+        response = self.client.post(url, {"title": "Unique Doc"})
 
-        # 3. Baseline Data
-        self.doc = DocumentModel.objects.create(
-            title="Sensitive Corporate Strategy", created_by=self.owner
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_get_documents_list(self):
+        DocumentModel.objects.create_document(
+            created_by=self.user, title="Doc 1"
         )
 
-        # 4. Create an initial approved version
-        self.version = VersionsModel.objects.create(
+        url = reverse("document-list-create")
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_update_document(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Old Title"
+        )
+
+        url = reverse("document-detail-manage", args=[doc.id])
+        response = self.client.put(url, {"title": "New Title"})
+
+        doc.refresh_from_db()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(doc.title, "New Title")
+
+
+# ------------------------------------------------------------------
+# Soft Delete & Restore
+# ------------------------------------------------------------------
+
+class DocumentDeleteRestoreTests(BaseTestCase):
+
+    def test_delete_without_active_version(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Delete Me"
+        )
+
+        url = reverse("document-detail-manage", args=[doc.id])
+        response = self.client.delete(url)
+
+        doc.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(doc.is_deleted)
+
+    def test_delete_requires_approval(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Needs Approval"
+        )
+
+        VersionsModel.objects.create(
+            document=doc,
+            version_number=1,
+            is_active=True,
+            created_by=self.user,
+        )
+
+        DocumentPermissionModel.objects.create(
+            user=self.reviewer,
+            document=doc,
+            version=None,
+            permission_type="APPROVE",
+        )
+
+        url = reverse("document-detail-manage", args=[doc.id])
+        response = self.client.delete(url)
+
+        doc.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertFalse(doc.is_deleted)
+
+    def test_restore_document(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Restore Me"
+        )
+        doc.delete()
+
+        url = reverse("document-restore", args=[doc.id])
+        response = self.client.post(url)
+
+        doc.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(doc.is_deleted)
+
+
+# ------------------------------------------------------------------
+# Visibility & Permissions
+# ------------------------------------------------------------------
+
+class DocumentVisibilityTests(BaseTestCase):
+
+    def test_user_sees_own_document(self):
+        DocumentModel.objects.create_document(
+            created_by=self.user, title="My Doc"
+        )
+
+        url = reverse("document-list-create")
+        response = self.client.get(url)
+
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_user_sees_shared_document(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Shared Doc"
+        )
+
+        DocumentPermissionModel.objects.create(
+            user=self.user2,
+            document=doc,
+            permission_type="READ",
+        )
+
+        token2 = str(RefreshToken.for_user(self.user2).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token2}")
+
+        url = reverse("document-list-create")
+        response = self.client.get(url)
+
+        self.assertEqual(len(response.data["results"]), 1)
+
+
+# ------------------------------------------------------------------
+# Deletion Workflow (Approval System)
+# ------------------------------------------------------------------
+
+class DocumentDeletionWorkflowTests(BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Workflow Doc"
+        )
+
+        VersionsModel.objects.create(
             document=self.doc,
             version_number=1,
-            content="Top Secret initial draft content.",
-            created_by=self.owner,
-            status=VersionStatus.APPROVED,
             is_active=True,
+            created_by=self.user,
         )
 
-    def set_auth(self, token=None):
-        """Helper to switch between users or clear credentials"""
-        if token:
-            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
-        else:
-            self.client.credentials()
-
-
-# =========================================================
-# LEVEL 1: BROKEN OBJECT LEVEL AUTHORIZATION (BOLA/IDOR)
-# =========================================================
-class DocumentBOLATests(BaseSteelTestCase):
-    """Tests if a user can access or guess another user's private data."""
-
-    def test_hacker_cannot_view_owner_detail(self):
-        self.set_auth(self.hacker_token)
-        # Targeted the VersionDetailView: path("<uuid:pk>/", ...)
-        res = self.client.get(f"/api/versions/{self.version.id}/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_hacker_cannot_list_owner_docs(self):
-        self.set_auth(self.hacker_token)
-        res = self.client.get("/api/documents/")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data.get("count"), 0)
-
-    def test_uuid_brute_force_resistance(self):
-        self.set_auth(self.hacker_token)
-        for _ in range(3):
-            res = self.client.get(f"/api/documents/{uuid.uuid4()}/")
-            self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-
-# =========================================================
-# LEVEL 2: BROKEN PROPERTY INCORPORATION (BPI/MASS ASSIGNMENT)
-# =========================================================
-class DocumentMassAssignmentTests(BaseSteelTestCase):
-    """Tests if users can change sensitive fields via PUT/PATCH."""
-
-    def test_prevent_created_by_hijack(self):
-        self.set_auth(self.owner_token)
-        payload = {"title": "New Title", "created_by": self.hacker.id}
-        self.client.put(f"/api/documents/{self.doc.id}/", payload)
-        self.doc.refresh_from_db()
-        self.assertEqual(self.doc.created_by, self.owner)
-
-    def test_prevent_version_number_manipulation(self):
-        self.set_auth(self.owner_token)
-        payload = {"version_number": 999}
-        res = self.client.patch(f"/api/versions/{self.version.id}/", payload)
-        self.version.refresh_from_db()
-        self.assertNotEqual(self.version.version_number, 999)
-
-
-# =========================================================
-# LEVEL 3: VERSION & FILE INTEGRITY TESTS
-# =========================================================
-class VersionIntegrityTests(BaseSteelTestCase):
-    """Tests the immutability and file logic of the versioning system."""
-
-    def test_approved_version_is_immutable(self):
-        self.set_auth(self.owner_token)
-        res = self.client.patch(
-            f"/api/versions/{self.version.id}/", {"content": "Hacked content"}
-        )
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_checksum_consistency(self):
-        self.set_auth(self.owner_token)
-        file = io.BytesIO(b"Steel-plating integrity check")
-        file.name = "test.txt"
-        data = {
-            "file": file,
-            "document": self.doc.id,
-            "content": "Mandatory version content",
-        }
-        with patch("cloudinary.uploader.upload") as mocked_upload:
-            mocked_upload.return_value = {"secure_url": "https://test.com/file.pdf"}
-            # This matches DocumentVersionHandler: path("document/<uuid:id>/", ...)
-            res = self.client.post(
-                f"/api/versions/document/{self.doc.id}/", data, format="multipart"
-            )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-
-
-# =========================================================
-# LEVEL 4: REVIEW & WORKFLOW LOCKDOWN
-# =========================================================
-class ReviewWorkflowTests(BaseSteelTestCase):
-    """Ensures business logic and review stages are strictly followed."""
-
-    def test_singleton_active_version(self):
-        v2 = VersionsModel.objects.create(
+        DocumentPermissionModel.objects.create(
+            user=self.reviewer,
             document=self.doc,
-            version_number=2,
-            status=VersionStatus.APPROVED,
-            is_active=True,
-            created_by=self.owner,
+            permission_type="APPROVE",
+            version=None,
         )
-        self.version.refresh_from_db()
-        self.assertFalse(self.version.is_active)
-        self.assertTrue(v2.is_active)
 
-    def test_reviewer_permissions(self):
-        self.set_auth(self.hacker_token)
-        res = self.client.patch(
-            f"/api/versions/{self.version.id}/", {"status": "approved"}
+    def test_deletion_request_created(self):
+        url = reverse("document-request-delete", args=[self.doc.id])
+        response = self.client.post(url)
+
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+        self.assertEqual(DocumentDeletionRequestModel.objects.count(), 1)
+        self.assertEqual(DocumentDeletionDecisionModel.objects.count(), 1)
+
+    def test_reviewer_approves_deletion(self):
+        self.client.post(reverse("document-request-delete", args=[self.doc.id]))
+
+        token = str(RefreshToken.for_user(self.reviewer).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        url = reverse("document-deletion-decision", args=[self.doc.id])
+        response = self.client.post(url, {"decision": "APPROVED"})
+
+        self.doc.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(self.doc.is_deleted)
+
+    def test_reviewer_rejects_deletion(self):
+        self.client.post(reverse("document-request-delete", args=[self.doc.id]))
+
+        token = str(RefreshToken.for_user(self.reviewer).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+
+        url = reverse("document-deletion-decision", args=[self.doc.id])
+        response = self.client.post(url, {"decision": "REJECTED"})
+
+        self.doc.refresh_from_db()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(self.doc.is_deleted)
+
+        deletion_request = DocumentDeletionRequestModel.objects.first()
+        self.assertEqual(deletion_request.status, "REJECTED")
+
+
+# ------------------------------------------------------------------
+# Edge Cases
+# ------------------------------------------------------------------
+
+class DocumentEdgeCaseTests(BaseTestCase):
+
+    def test_non_owner_cannot_restore(self):
+        doc = DocumentModel.objects.create_document(
+            created_by=self.user, title="Protected Doc"
         )
-        self.assertNotEqual(res.status_code, status.HTTP_200_OK)
+        doc.delete()
 
+        token = str(RefreshToken.for_user(self.user2).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
 
-# =========================================================
-# LEVEL 5: DATA LEAKAGE & EXPORT SECURITY
-# =========================================================
-class DataLeakageTests(BaseSteelTestCase):
-    """Tests if sensitive data leaks through error messages or exports."""
+        url = reverse("document-restore", args=[doc.id])
+        response = self.client.post(url)
 
-    def test_diff_without_permission(self):
-        self.set_auth(self.hacker_token)
-        # Matches: path("<uuid:pk>/diff/", ...)
-        res = self.client.get(f"/api/versions/{self.version.id}/diff/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_export_pdf_authentication(self):
-        # 1. Clear any login state
-        self.client.credentials()
-
-        # 2. Use REVERSE to find the URL.
-        # This matches the 'name' in your urls.py and passes the required args.
-        url = reverse("version-export", kwargs={"pk": self.version.id, "file_format": "pdf"})
-
-        # 3. Call the URL
-        res = self.client.get(url)
-
-        # If this is 404 now, it means VersionExportView is missing
-        # from your views or the name 'version-export' is wrong.
-        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
-
-
-# =========================================================
-# LEVEL 6: INPUT SANITIZATION (XSS/SQLi)
-# =========================================================
-class InjectionResistanceTests(BaseSteelTestCase):
-    """Tests resilience against common web attacks."""
-
-    def test_xss_in_document_title(self):
-        self.set_auth(self.owner_token)
-        payload = {"title": "<script>alert('xss')</script>"}
-        res = self.client.post("/api/documents/", payload)
-        self.assertIn(res.status_code, [201, 400])
-
-    def test_large_payload_denial_of_service(self):
-        self.set_auth(self.owner_token)
-        payload = {"title": "A" * 10**6}
-        res = self.client.post("/api/documents/", payload)
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

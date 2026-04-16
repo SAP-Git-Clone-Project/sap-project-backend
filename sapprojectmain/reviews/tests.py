@@ -131,6 +131,21 @@ class TestReviewPermissions(ReviewBaseTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 2)
 
+    def test_inbox_can_filter_by_version(self):
+        """Performance regression: server-side version filter avoids fetching all reviews."""
+        other_v = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.reviewer,
+            status=VersionStatus.PENDING,
+        )
+        ReviewModel.objects.create(version=other_v, review_status=ReviewStatus.PENDING)
+
+        url = reverse("review-inbox")
+        response = self.client.get(url, {"all": "true", "version": str(self.version.id)})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(str(response.data[0]["version"]), str(self.version.id))
+
 class TestReviewStateSync(ReviewBaseTestCase):
 
     def test_version_status_sync_on_reject(self):

@@ -63,6 +63,7 @@ def initiate_deletion_with_notifications(request, document):
     reviewers = DocumentPermissionModel.objects.filter(
         document=document,
         permission_type="APPROVE",
+        version__isnull=True,
     ).select_related("user")
 
     if not reviewers.exists():
@@ -188,10 +189,16 @@ class DocumentListCreateView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents().select_related('created_by')
         else:
+            visible_doc_ids = DocumentModel.objects.visible_documents(user=user).values_list(
+                "id", flat=True
+            )
             documents = (
-                DocumentModel.objects.visible_documents(user=user)
-                | DocumentModel.objects.filter(created_by=user, is_deleted=True)
-            ).distinct().select_related('created_by')
+                DocumentModel.objects.filter(
+                    Q(id__in=visible_doc_ids) | Q(created_by=user, is_deleted=True)
+                )
+                .distinct()
+                .select_related("created_by")
+            )
 
         # PERF:
         # - Fetch only what the list view needs for "active_version" rendering.
@@ -284,9 +291,11 @@ class DocumentListGetAllView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents()
         else:
-            documents = (
-                DocumentModel.objects.visible_documents(user=user)
-                | DocumentModel.objects.filter(created_by=user, is_deleted=True)
+            visible_doc_ids = DocumentModel.objects.visible_documents(user=user).values_list(
+                "id", flat=True
+            )
+            documents = DocumentModel.objects.filter(
+                Q(id__in=visible_doc_ids) | Q(created_by=user, is_deleted=True)
             ).distinct()
 
         # PERF: This endpoint is used by the frontend for dashboard stats.
@@ -440,6 +449,12 @@ class DocumentDeletionDecisionView(APIView):
             if deletion_request:
                 deletion_request.status = "REJECTED"
                 deletion_request.save()
+
+            # Ensure the document is NOT deleted.
+            # If it was soft-deleted by an earlier action, restore it.
+            if document.is_deleted:
+                document.restore()
+                
             # Notify the owner that deletion was rejected
             notify_owner_of_decision(document, deletion_request, accepted=False)
             return Response({"detail": "Deletion rejected."}, status=status.HTTP_200_OK)
@@ -506,6 +521,6 @@ class DocumentRequestDeleteView(APIView):
         try:
             if self.request.user.is_superuser:
                 return DocumentModel.objects.get(pk=id)
-            return DocumentModel.objects.active_documents().get(pk=id)
+            return DocumentModel.objects.all().get(pk=id)
         except (DocumentModel.DoesNotExist, ValueError):
             return None

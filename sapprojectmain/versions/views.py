@@ -14,7 +14,10 @@ from django.db import transaction
 from django.db.models import Q
 from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import letter
+from pdfminer.high_level import extract_text
+import docx
 
 import puremagic as magic
 from django.core.exceptions import ValidationError
@@ -40,7 +43,6 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
-
 
 def get_signed_url(file_path: str) -> str:
     if not file_path:
@@ -429,6 +431,8 @@ class VersionDiffView(APIView):
                 for line in new_lines[j1:j2]:
                     diff_output.append({"type": "insert", "value": line})
 
+        old_size = len(parent_file_text.encode("utf-8"))
+        new_size = len(current_file_text.encode("utf-8"))
         return Response(
             {
                 "can_compare": True,
@@ -439,17 +443,48 @@ class VersionDiffView(APIView):
                 "new_version_id": str(version.id),
                 "old_filename": base_filename,
                 "new_filename": current_filename,
+                "old_size": old_size,
+                "new_size": new_size,
                 "diff": diff_output,
             }
         )
+    
+def extract_file_text(file_bytes, extension):
+    """
+    Downloads file and extracts human-readable text depending on format.
+    """
+
+    try:
+        """
+        Extract text from already-downloaded file bytes.
+        """
+
+        file_stream = io.BytesIO(file_bytes)
+
+        # PDF
+        if extension == "pdf":
+            return extract_text(file_stream) or ""
+
+        # DOCX
+        if extension == "docx":
+            doc = docx.Document(file_stream)
+            return "\n".join(p.text for p in doc.paragraphs)
+
+        # DOC (not supported well)
+        if extension == "doc":
+            return "DOC format not fully supported. Convert to DOCX."
+
+        # TXT / fallback
+        return file_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        traceback.print_exc()
+        return None
 
 class VersionExportView(APIView):
     permission_classes = [IsAuthenticated, HasDocumentReadPermission]
 
     def get(self, request, pk, file_format):
-
         version = get_object_or_404(VersionsModel, pk=pk)
-
         user = request.user
 
         has_access = (
@@ -467,54 +502,92 @@ class VersionExportView(APIView):
 
         filename = f"{version.document.title}_v{version.version_number}"
 
+        file_url = version.file_path
+
+        if not file_url:
+            return Response(
+                {"error": "No file associated with this version."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            file_response = requests.get(file_url, stream=True)
+            file_response.raise_for_status()
+            file_bytes = file_response.content
+            extension = file_url.split("?")[0].split(".")[-1].lower()
+            extracted_text = extract_file_text(file_bytes, extension)
+        except Exception:
+            return Response(
+                {"error": "Failed to fetch file from storage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
         if file_format == "txt":
+            try:
+                text_content = extracted_text
+            except Exception:
+                text_content = "Binary file content cannot be decoded."
+
             header = (
                 f"DOC: {version.document.title}\n"
                 f"VER: {version.version_number}\n"
-                f"BY: {version.created_by.username}\n" + ("-" * 20) + "\n\n"
+                f"BY: {version.created_by.username}\n"
+                + ("-" * 20)
+                + "\n\n"
             )
 
-            content = header + (
-                version.content or "Binary file content cannot be displayed."
-            )
+            content = header + text_content
 
             response = HttpResponse(content, content_type="text/plain")
             response["Content-Disposition"] = f'attachment; filename="{filename}.txt"'
             return response
 
         if file_format == "pdf":
-            buffer = io.BytesIO()
-            p = canvas.Canvas(buffer, pagesize=letter)
+            # 1. download original PDF
+            pdf_stream = io.BytesIO(file_bytes)
+            original_pdf = PdfReader(pdf_stream)
 
-            p.setFont("Helvetica-Bold", 14)
-            p.drawString(50, 750, f"Document: {version.document.title}")
+            # 2. create header page in memory
+            header_buffer = io.BytesIO()
+            c = canvas.Canvas(header_buffer, pagesize=letter)
 
-            p.setFont("Helvetica", 10)
-            p.drawString(
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(50, 750, f"Document: {version.document.title}")
+
+            c.setFont("Helvetica", 10)
+            c.drawString(
                 50,
                 735,
                 f"Version: {version.version_number} | Author: {version.created_by.username}",
             )
 
-            p.line(50, 725, 550, 725)
+            c.line(50, 725, 550, 725)
+            c.showPage()
+            c.save()
 
-            p.setFont("Courier", 9)
-            text = p.beginText(50, 700)
+            header_buffer.seek(0)
+            header_pdf = PdfReader(header_buffer)
 
-            for line in (version.content or "Binary file content.").splitlines()[:60]:
-                text.textLine(line)
+            # 3. merge PDFs
+            writer = PdfWriter()
 
-            p.drawText(text)
-            p.showPage()
-            p.save()
+            # add header page first
+            writer.add_page(header_pdf.pages[0])
 
-            buffer.seek(0)
-            return FileResponse(buffer, as_attachment=True, filename=f"{filename}.pdf")
+            # add original content
+            for page in original_pdf.pages:
+                writer.add_page(page)
 
-        return Response(
-            {"error": "Invalid format. Use 'pdf' or 'txt'."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+            # 4. output final file
+            output_buffer = io.BytesIO()
+            writer.write(output_buffer)
+            output_buffer.seek(0)
+
+            return FileResponse(
+                output_buffer,
+                as_attachment=True,
+                filename=f"{filename}.pdf"
+            )
 
 
 class VersionInheritedReviewersView(APIView):
