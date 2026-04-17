@@ -8,6 +8,7 @@ import re
 from .models import UserModel
 from user_roles.models import Role, UserRole
 from core.rbac import get_global_roles
+from .models import UserModel , UserRoleModel, RoleChoices
 
 # VALIDATORS
 # NOTE: Regex to ensure usernames are URL-safe and start with a letter
@@ -179,3 +180,5 @@ class UserSearchSerializer(serializers.ModelSerializer):
 
     def get_eligible_for_reviewer(self, obj):
         return Role.RoleName.REVIEWER in get_global_roles(obj)
+        fields = ["id", "username", "email", "first_name", "last_name", "avatar"]
+        read_only_fields = ["id", "username", "email"]

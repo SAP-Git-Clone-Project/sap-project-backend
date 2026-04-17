@@ -5,6 +5,8 @@ from django.contrib.auth.models import (
     PermissionsMixin,
     BaseUserManager,
 )
+from django.conf import settings
+from .models import RoleChoices
 
 
 class UserManager(BaseUserManager):
@@ -54,10 +56,12 @@ class UserModel(AbstractBaseUser, PermissionsMixin):
     # NOTE: Configures email as the primary login identifier
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
-
+    
     class Meta:
         db_table = "users"
 
     def __str__(self):
         # NOTE: Returns email for user identification in admin and logs
-        return self.email
+        return self.user.email
+
+    
