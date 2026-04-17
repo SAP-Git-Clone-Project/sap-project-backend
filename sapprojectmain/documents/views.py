@@ -129,15 +129,31 @@ class DocumentDetailView(APIView):
         return [IsAuthenticatedUser()]
 
     def get_object(self, id):
+        user = self.request.user
         try:
-            if self.request.user.is_superuser or self.request.user.is_staff:
-                return DocumentModel.objects.all().get(pk=id)
-            owner_doc = DocumentModel.objects.filter(
-                pk=id, created_by=self.request.user
-            ).first()
-            if owner_doc:
-                return owner_doc
-            return DocumentModel.objects.active_documents().get(pk=id)
+            # 1. Staff/Superusers skip checks
+            if user.is_staff or user.is_superuser:
+                return DocumentModel.objects.get(pk=id)
+
+            # 2. Main query: User's visible docs OR any document with an active version
+            # We use .distinct() because the join with versions might return multiple rows
+            document = DocumentModel.objects.filter(
+                Q(pk=id) & (
+                    Q(id__in=DocumentModel.objects.visible_documents(user=user).values('id')) |
+                    Q(versions__is_active=True)
+                )
+            ).distinct().first()
+
+            # 3. Fallback: Creator checking their own deleted trash
+            if not document:
+                document = DocumentModel.objects.filter(
+                    pk=id, 
+                    created_by=user, 
+                    is_deleted=True
+                ).first()
+
+            return document
+
         except (DocumentModel.DoesNotExist, ValueError):
             return None
 
@@ -156,6 +172,9 @@ class DocumentDetailView(APIView):
             return Response(
                 {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
             )
+        
+        self.check_object_permissions(request, document)
+
         serializer = DocumentSerializer(
             document, data=request.data, partial=True, context={"request": request}
         )
@@ -339,6 +358,8 @@ class DocumentListGetAllView(APIView):
                 latest_by_doc_id[doc_id] = next(versions, None)
             for d in doc_list:
                 d._latest_version = latest_by_doc_id.get(d.id)
+
+        print(doc_list)
 
         serializer = DocumentSerializer(
             doc_list, many=True, context={"request": request, "stats_mode": True}

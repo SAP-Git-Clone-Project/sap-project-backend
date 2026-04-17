@@ -98,23 +98,32 @@ class HasDocumentReadPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
 
+        # Superusers always have access
         if user.is_superuser:
             return True
 
+        # Owners always have access
         if hasattr(obj, "created_by") and obj.created_by == user:
             return True
 
-        doc = getattr(obj, "document", obj) if hasattr(obj, "document") or hasattr(obj, "document_permissions") else None
-        target_version = obj if doc is not None and doc is not obj else None
+        # Determine if we are looking at a Document or a Version
+        # Assuming 'obj' is either DocumentModel or VersionsModel
+        is_version = hasattr(obj, "document") and not hasattr(obj, "document_permissions")
+        doc = obj.document if is_version else obj
 
+        if hasattr(doc, "versions"):
+            if doc.versions.filter(is_active=True).exists():
+                return True
+
+        # If no active version exists, fallback to checking the DocumentPermissionModel
         if doc:
             permission_query = Q(user=user)
             
-            if target_version:
-                # If viewing a version, allow if global OR version-specific
-                permission_query &= (Q(version=target_version) | Q(version__isnull=True))
+            if is_version:
+                # If viewing a specific version, allow if global OR version-specific permission exists
+                permission_query &= (Q(version=obj) | Q(version__isnull=True))
             else:
-                # If viewing the document root, only global permissions count
+                # If viewing the document root, only global (non-version-specific) permissions count
                 permission_query &= Q(version__isnull=True)
 
             return doc.document_permissions.filter(permission_query).exists()

@@ -3,6 +3,7 @@ from django.db import models
 from django.db.models import Q
 from django.conf import settings
 from django.db import transaction
+from versions.models import VersionsModel
 
 # --- DOCUMENT QUERY SET ---
 class DocumentQuerySet(models.QuerySet):
@@ -27,11 +28,16 @@ class DocumentManager(models.Manager):
         from document_permissions.models import DocumentPermissionModel
 
         has_permission = DocumentPermissionModel.objects.filter(document=models.OuterRef("pk"), user=user)
+        has_active_version = VersionsModel.objects.filter(
+            document=models.OuterRef("pk"), 
+            is_active=True
+        )
 
         return self.active_documents().annotate(
-            user_has_permission=models.Exists(has_permission)
+            user_has_permission=models.Exists(has_permission),
+            has_active_version=models.Exists(has_active_version)
         ).filter(
-            Q(created_by=user) | Q(user_has_permission=True)
+            Q(created_by=user) | Q(user_has_permission=True) | Q(has_active_version=True)
         ).distinct()
 
     def create_document(self, created_by, title, **extra_fields):

@@ -86,9 +86,11 @@ def get_authorized_version(user, pk):
 
     return get_object_or_404(
         base_qs.filter(
-            Q(document__created_by=user)
-            | Q(document__document_permissions__user=user)
-            | Q(created_by=user),
+            # We use an OR (|) to allow access if ANY of these are true
+            Q(document__created_by=user) |              # Owner of the doc
+            Q(document__document_permissions__user=user) | # Invited to the doc
+            Q(created_by=user) |                        # Creator of this version
+            Q(is_active=True),                          # <--- PUBLIC ACCESS DOOR
             document__is_deleted=False,
         ).distinct(),
         pk=pk,
@@ -236,20 +238,29 @@ class DocumentVersionHandler(APIView):
             )
 
     def get(self, request, id):
-        from django.db.models import Exists, OuterRef
+        from django.db.models import Exists, OuterRef, Q
 
         if request.user.is_superuser:
             docs = DocumentModel.objects.all()
         else:
-            docs = DocumentModel.objects.filter(
-                Q(created_by=request.user) | Q(document_permissions__user=request.user)
+            # Check if the document has any active versions
+            has_active_version = VersionsModel.objects.filter(
+                document=OuterRef('pk'), 
+                is_active=True
+            )
+
+            docs = DocumentModel.objects.annotate(
+                is_public=Exists(has_active_version)
+            ).filter(
+                Q(created_by=request.user) | 
+                Q(document_permissions__user=request.user) |
+                Q(is_public=True)  # <-- This allows Readers to find the doc
             ).distinct()
 
-        doc = get_object_or_404(
-            docs,
-            id=id,
-        )
+        # Now get_object_or_404 will succeed for Readers
+        doc = get_object_or_404(docs, id=id)
 
+        # 1. Fetch versions for this document
         versions = (
             VersionsModel.objects.filter(document=doc)
             .select_related(
@@ -261,14 +272,23 @@ class DocumentVersionHandler(APIView):
             .order_by("-version_number")
         )
 
+        # 2. Determine if user has "Management" rights
         is_owner = (
             request.user.is_superuser or 
             doc.created_by == request.user or 
-            doc.document_permissions.filter(user=request.user, permission_type="DELETE").exists()
+            doc.document_permissions.filter(
+                user=request.user, 
+                permission_type__in=["DELETE", "WRITE"]
+            ).exists()
         )
 
+        # 3. Filter version visibility based on role
         if not is_owner:
+            # Readers should only see active or approved versions, 
+            # usually excluding rejected or draft versions.
             versions = versions.exclude(status=VersionStatus.REJECTED)
+            # Optional: You might also want to filter for only active/approved:
+            # versions = versions.filter(Q(is_active=True) | Q(status=VersionStatus.APPROVED))
 
         serializer = VersionSerializer(versions, many=True, context={"request": request})
         return Response(serializer.data)
@@ -545,6 +565,7 @@ class VersionExportView(APIView):
             or version.created_by == user
             or version.document.created_by == user
             or version.document.document_permissions.filter(user=user).exists()
+            or version.is_active
         )
 
         if not has_access:
