@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 from django.urls import reverse
+from user_roles.models import Role, UserRole
 
 User = get_user_model()
 
@@ -51,6 +52,22 @@ class TestAuthFlow(BaseTestCase):
             },
         )
         self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_register_assigns_default_reader_role(self):
+        res = self.client.post(
+            reverse("register"),
+            {
+                "email": "reader@test.com",
+                "username": "readeruser",
+                "first_name": "A",
+                "last_name": "B",
+                "password": "StrongPass1",
+            },
+        )
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        user = User.objects.get(email="reader@test.com")
+        reader = Role.objects.get(role_name=Role.RoleName.READER)
+        self.assertTrue(UserRole.objects.filter(user=user, role=reader).exists())
 
     def test_login(self):
         res = self.client.post(

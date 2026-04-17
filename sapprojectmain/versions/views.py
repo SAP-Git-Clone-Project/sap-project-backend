@@ -3,6 +3,7 @@ import hashlib
 import difflib
 import cloudinary.uploader
 import io
+import zipfile
 from urllib.parse import urlparse
 import httpx
 import requests
@@ -15,6 +16,8 @@ from django.db.models import Q
 from django.http import FileResponse, HttpResponse
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from django.utils import timezone
+from django.utils.text import slugify
 
 import puremagic as magic
 from django.core.exceptions import ValidationError
@@ -28,20 +31,24 @@ import traceback
 import cloudinary.utils
 import time
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from core.permissions import (
     HasDocumentReadPermission,
     HasDocumentWritePermission,
     IsAuthenticatedUser,
 )
+from core.rbac import can_review_document
 from rest_framework.permissions import IsAuthenticated
 
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-
 def get_signed_url(file_path: str) -> str:
+    if not file_path:
+        return ""
     ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
     resource_type = "image" if ext in {"jpg", "jpeg", "png", "gif", "webp"} else "raw"
 
@@ -79,16 +86,90 @@ def get_authorized_version(user, pk):
 
     return get_object_or_404(
         base_qs.filter(
-            Q(document__created_by=user)
-            | Q(document__document_permissions__user=user)
-            | Q(created_by=user),
+            # We use an OR (|) to allow access if ANY of these are true
+            Q(document__created_by=user) |              # Owner of the doc
+            Q(document__document_permissions__user=user) | # Invited to the doc
+            Q(created_by=user) |                        # Creator of this version
+            Q(is_active=True),                          # <--- PUBLIC ACCESS DOOR
             document__is_deleted=False,
         ).distinct(),
         pk=pk,
     )
 
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "txt", "png", "jpg", "jpeg"}
+# Uploads: extension must match detected content (magic bytes), not just one OR the other.
+ALLOWED_EXTENSIONS = frozenset({"pdf", "doc", "docx", "txt"})
+
+# Declared extension -> MIME types that are acceptable for that extension (normalized, no params).
+EXTENSION_EXPECTED_MIMES = {
+    "pdf": frozenset({"application/pdf"}),
+    "doc": frozenset({"application/msword"}),
+    "docx": frozenset(
+        {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+    ),
+    "txt": frozenset({"text/plain", "text/markdown"}),
+}
+
+# Never treat as documents/images regardless of filename.
+BLOCKLISTED_MIMES = frozenset(
+    {
+        "text/html",
+        "application/javascript",
+        "text/javascript",
+        "application/x-javascript",
+        "application/x-msdownload",
+        "application/x-dosexec",
+        "application/x-executable",
+    }
+)
+
+
+def _normalize_mime(mime: str) -> str:
+    if not mime:
+        return ""
+    return mime.split(";", 1)[0].strip().lower()
+
+
+def _sniff_mime_from_bytes(chunk: bytes) -> str | None:
+    """Fallback when magic returns octet-stream; signatures for allowed types only."""
+    if not chunk:
+        return None
+    if chunk.startswith(b"%PDF"):
+        return "application/pdf"
+    if chunk.startswith(b"PK\x03\x04"):
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(chunk), "r")
+            names = set(zf.namelist())
+            zf.close()
+            if "[Content_Types].xml" in names and any(
+                n.startswith("word/") for n in names
+            ):
+                return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        except Exception:
+            return None
+        return None
+    if chunk.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return "application/msword"
+    return None
+
+
+def _looks_like_plain_text(chunk: bytes) -> bool:
+    if not chunk:
+        return True
+    if b"\x00" in chunk[:8192]:
+        return False
+    sample = chunk[:8192]
+    try:
+        s = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            s = sample.decode("latin-1")
+        except Exception:
+            return False
+    if not s.strip():
+        return True
+    printable = sum(1 for c in s if c.isprintable() or c in "\n\r\t")
+    return printable / max(len(s), 1) > 0.95
 
 
 class DocumentVersionHandler(APIView):
@@ -98,96 +179,125 @@ class DocumentVersionHandler(APIView):
         return [HasDocumentWritePermission()]
 
     def validate_is_text_or_asset(self, file):
+        """
+        Extension and content must agree: magic bytes (and sniff fallback) must match
+        the declared filename extension. Prevents e.g. malware.txt with real PE binary,
+        or report.pdf with text/html payload.
+        """
+        filename = getattr(file, "name", "") or ""
+        if "." not in filename:
+            raise ValidationError(
+                "File type not allowed: missing extension; declare a real file name."
+            )
+
+        ext = filename.rsplit(".", 1)[-1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise ValidationError(
+                f"File type not allowed: extension '.{ext}' is not permitted."
+            )
+
         chunk = file.read(8192)
+        file.seek(0)
+
+        if not chunk:
+            raise ValidationError(
+                "File type not allowed: empty file cannot be validated."
+            )
 
         try:
             matches = magic.magic_string(chunk)
-            mime_type = matches[0].mime_type if matches else None
-            if not mime_type:
-                # fall back to checking the file extension via puremagic
-                mime_type = magic.from_file(file.name)
+            mime_raw = matches[0].mime_type if matches else None
         except Exception:
-            mime_type = "application/octet-stream"
+            mime_raw = None
 
-        file.seek(0)
+        mime_norm = _normalize_mime(mime_raw or "")
 
-        allowed_mimes = [
-            # Documents
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            # Images (Existing + New)
-            "image/jpeg",  # Covers .jpg and .jpeg
-            "image/png",  # .png
-            "image/gif",  # .gif
-            "image/webp",  # .webp
-            "image/svg+xml",  # .svg (Note the +xml suffix)
-        ]
-
-        if not (
-            mime_type.startswith("text/")
-            or mime_type in allowed_mimes
-            or file.name.endswith(".doc")
-            or file.name.endswith(".docx")
-            or file.name.endswith(".pdf")
-            or file.name.endswith(".txt")
-        ):
+        if mime_norm in BLOCKLISTED_MIMES:
             raise ValidationError(
-                f"Asset Security Breach: File type '{mime_type}' is not authorized."
+                f"File type not allowed: content looks like '{mime_norm}' "
+                f"which is not permitted for uploads."
+            )
+
+        if not mime_norm or mime_norm == "application/octet-stream":
+            sniffed = _sniff_mime_from_bytes(chunk)
+            if sniffed:
+                mime_norm = sniffed
+            elif ext == "txt" and _looks_like_plain_text(chunk):
+                mime_norm = "text/plain"
+            else:
+                mime_norm = mime_norm or "application/octet-stream"
+
+        expected = EXTENSION_EXPECTED_MIMES.get(ext)
+        if not expected:
+            raise ValidationError(f"File type not allowed: extension '.{ext}' is not permitted.")
+
+        if mime_norm not in expected:
+            raise ValidationError(
+                f"File type not allowed: extension '.{ext}' does not match content "
+                f"(detected '{mime_norm}'). Possible spoofing."
             )
 
     def get(self, request, id):
-        from django.db.models import Exists, OuterRef
+        from django.db.models import Exists, OuterRef, Q
 
         if request.user.is_superuser:
             docs = DocumentModel.objects.all()
         else:
-            docs = DocumentModel.objects.filter(
-                Q(created_by=request.user) | Q(document_permissions__user=request.user)
+            # Check if the document has any active versions
+            has_active_version = VersionsModel.objects.filter(
+                document=OuterRef('pk'), 
+                is_active=True
+            )
+
+            docs = DocumentModel.objects.annotate(
+                is_public=Exists(has_active_version)
+            ).filter(
+                Q(created_by=request.user) | 
+                Q(document_permissions__user=request.user) |
+                Q(is_public=True)  # <-- This allows Readers to find the doc
             ).distinct()
 
-        doc = get_object_or_404(
-            docs,
-            id=id,
+        # Now get_object_or_404 will succeed for Readers
+        doc = get_object_or_404(docs, id=id)
+
+        # 1. Fetch versions for this document
+        versions = (
+            VersionsModel.objects.filter(document=doc)
+            .select_related(
+                "created_by",
+                "document",
+                "document__created_by",
+                "parent_version",
+            )
+            .order_by("-version_number")
         )
 
-        versions = VersionsModel.objects.filter(document=doc).select_related(
-            "created_by", 
-            "document", 
-            "parent_version"
-        ).order_by("-version_number")
-
+        # 2. Determine if user has "Management" rights
         is_owner = (
             request.user.is_superuser or 
             doc.created_by == request.user or 
-            doc.document_permissions.filter(user=request.user, permission_type="DELETE").exists()
+            doc.document_permissions.filter(
+                user=request.user, 
+                permission_type__in=["DELETE", "WRITE"]
+            ).exists()
         )
 
+        # 3. Filter version visibility based on role
         if not is_owner:
+            # Readers should only see active or approved versions, 
+            # usually excluding rejected or draft versions.
             versions = versions.exclude(status=VersionStatus.REJECTED)
+            # Optional: You might also want to filter for only active/approved:
+            # versions = versions.filter(Q(is_active=True) | Q(status=VersionStatus.APPROVED))
 
         serializer = VersionSerializer(versions, many=True, context={"request": request})
         return Response(serializer.data)
 
     def get_cloudinary_resource_type(self, file_obj):
         """
-        Cloudinary has three resource types:
-        - 'image': actual images (jpg, png, gif, webp...)
-        - 'video': video/audio files
-        - 'raw':   everything else (pdf, docx, txt, csv...)
+        Only .doc / .docx / .pdf / .txt are allowed after validation — upload as raw.
         """
-        image_mimes = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-
-        chunk = file_obj.read(8192)
-        file_obj.seek(0)
-
-        try:
-            matches = magic.magic_string(chunk)
-            mime_type = matches[0].mime_type if matches else "application/octet-stream"
-        except Exception:
-            mime_type = "application/octet-stream"
-
-        return "image" if mime_type in image_mimes else "raw"
+        return "raw"
 
     def post(self, request, id):
         try:
@@ -265,8 +375,10 @@ class DocumentVersionHandler(APIView):
 
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-        except Exception as ve:
-            print(ve)
+        except ValidationError as e:
+            messages = getattr(e, "messages", None)
+            msg = messages[0] if messages else str(e)
+            return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class VersionDetailView(APIView):
@@ -277,7 +389,7 @@ class VersionDetailView(APIView):
 
     def get(self, request, pk):
         version = get_authorized_version(request.user, pk)
-        serializer = VersionSerializer(version)
+        serializer = VersionSerializer(version, context={"request": request})
         return Response(serializer.data)
 
     def patch(self, request, pk):
@@ -289,10 +401,12 @@ class VersionDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if "status" in request.data and not request.user.is_staff:
-            if request.data["status"] == VersionStatus.APPROVED:
+        if "status" in request.data and not (request.user.is_staff or request.user.is_superuser):
+            if request.data["status"] == VersionStatus.APPROVED and not can_review_document(
+                request.user, version.document, version=version
+            ):
                 return Response(
-                    {"error": "Only reviewers or staff can approve versions."},
+                    {"error": "Only eligible reviewers or staff can approve versions."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
@@ -314,42 +428,97 @@ class VersionDiffView(APIView):
     permission_classes = [HasDocumentReadPermission]
 
     def fetch_file_text(self, url):
-        if not url: return ""
+        """
+        Fetches text content from Cloudinary.
+        Added follow_redirects=True because Cloudinary URLs often redirect to CDN nodes.
+        """
+        if not url:
+            return None
         try:
-            # Add a small timeout
-            with httpx.Client() as client:
-                r = client.get(url, timeout=5.0)
-                return r.text if r.status_code == 200 else ""
-        except:
-            return ""
+            with httpx.Client(follow_redirects=True) as client:
+                headers = {"User-Agent": "Mozilla/5.0"}
+                r = client.get(url, timeout=10.0, headers=headers)
+                if r.status_code == 200:
+                    # Use r.text to get decoded string content
+                    return r.text
+                return None
+        except Exception as e:
+            print(f"Cloudinary Fetch Error: {str(e)}")
+            return None
 
     def get(self, request, pk):
+        # 1. Authorization
         version = get_authorized_version(request.user, pk)
-
-        binary_exts = ["pdf", "docx", "doc"]
-        raw_path = urlparse(version.file_path).path if version.file_path else ""
-        ext = raw_path.rsplit(".", 1)[-1].lower() if "." in raw_path else ""
-
-        if ext in binary_exts or not version.content:
+        is_owner = version.document.created_by_id == request.user.id
+        
+        can_compare = (
+            request.user.is_superuser
+            or is_owner
+            or can_review_document(request.user, version.document, version=version)
+        )
+        
+        if not can_compare:
             return Response(
-                {
-                    "can_compare": False,
-                    "message": "Direct text comparison not supported for this file type.",
-                    "file_url": get_signed_url(version.file_path),
-                }
+                {"detail": "Only superusers, document owner, or reviewers can compare versions."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        parent = version.parent_version
+        # 2. Setup Base Version
+        compare_to = request.query_params.get("compare_to")
+        base_version = version.parent_version
+        
+        if compare_to:
+            if str(compare_to) == str(version.id):
+                return Response(
+                    {"detail": "Current version cannot be compared with itself."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            base_version = get_object_or_404(
+                VersionsModel.objects.filter(document_id=version.document_id),
+                pk=compare_to,
+            )
+            if not request.user.is_superuser:
+                get_authorized_version(request.user, base_version.id)
 
-        current_file_text = self.fetch_file_text(get_signed_url(version.file_path))
-
-        if not parent:
+        # 3. Fetch New Content from Cloudinary
+        current_signed_url = get_signed_url(version.file_path)
+        current_file_text = self.fetch_file_text(current_signed_url)
+        
+        if current_file_text is None:
             return Response(
-                {"has_parent": False, "new_content": current_file_text, "diff": []}
+                {"can_compare": False, "message": f"Cloudinary error: Could not retrieve V{version.version_number}"},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
-        parent_file_text = self.fetch_file_text(get_signed_url(parent.file_path))
+        current_filename = version.file_path.split('/')[-1] if version.file_path else "current.txt"
+        new_size = len(current_file_text.encode("utf-8"))
 
+        if not base_version:
+            return Response({
+                "can_compare": True,
+                "has_parent": False, 
+                "new_v": version.version_number,
+                "new_filename": current_filename,
+                "new_content": current_file_text, 
+                "old_size": 0,
+                "new_size": new_size,
+                "diff": []
+            })
+
+        # 4. Fetch Old Content from Cloudinary
+        base_signed_url = get_signed_url(base_version.file_path)
+        parent_file_text = self.fetch_file_text(base_signed_url)
+        
+        if parent_file_text is None:
+            return Response(
+                {"can_compare": False, "message": f"Cloudinary error: Could not retrieve V{base_version.version_number}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        base_filename = base_version.file_path.split('/')[-1] if base_version.file_path else "previous.txt"
+
+        # 5. Diffing Logic
+        # Clean lines to ensure \r\n doesn't mess up the comparison
         old_lines = parent_file_text.splitlines()
         new_lines = current_file_text.splitlines()
 
@@ -367,23 +536,28 @@ class VersionDiffView(APIView):
                 for line in new_lines[j1:j2]:
                     diff_output.append({"type": "insert", "value": line})
 
+        old_size = len(parent_file_text.encode("utf-8"))
         return Response(
             {
                 "can_compare": True,
-                "old_v": parent.version_number,
+                "has_parent": True,
+                "old_v": base_version.version_number,
                 "new_v": version.version_number,
+                "old_version_id": str(base_version.id),
+                "new_version_id": str(version.id),
+                "old_filename": base_filename,
+                "new_filename": current_filename,
+                "old_size": old_size,
+                "new_size": new_size,
                 "diff": diff_output,
             }
         )
-
 
 class VersionExportView(APIView):
     permission_classes = [IsAuthenticated, HasDocumentReadPermission]
 
     def get(self, request, pk, file_format):
-
         version = get_object_or_404(VersionsModel, pk=pk)
-
         user = request.user
 
         has_access = (
@@ -391,6 +565,7 @@ class VersionExportView(APIView):
             or version.created_by == user
             or version.document.created_by == user
             or version.document.document_permissions.filter(user=user).exists()
+            or version.is_active
         )
 
         if not has_access:
@@ -399,17 +574,73 @@ class VersionExportView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        filename = f"{version.document.title}_v{version.version_number}"
+        try:
+            tz_sofia = ZoneInfo("Europe/Sofia")
+        except Exception:
+            tz_sofia = timezone.get_fixed_timezone(120)
+
+        def format_uk_datetime(dt_value):
+            if not dt_value:
+                return "N/A"
+            if dt_value.tzinfo is None:
+                dt_value = dt_value.replace(tzinfo=tz_sofia)
+            return dt_value.astimezone(tz_sofia).strftime("%d/%m/%Y %H:%M:%S")
+
+        def format_file_size_bytes(size):
+            if size is None:
+                return "N/A"
+            return f"{size} B"
+
+        created_by = version.created_by
+
+        def get_user_full_name(user_obj):
+            if not user_obj:
+                return "N/A"
+            if hasattr(user_obj, "get_full_name") and callable(user_obj.get_full_name):
+                full = (user_obj.get_full_name() or "").strip()
+                if full:
+                    return full
+            first = (getattr(user_obj, "first_name", "") or "").strip()
+            last = (getattr(user_obj, "last_name", "") or "").strip()
+            combined = f"{first} {last}".strip()
+            return combined or "N/A"
+
+        created_by_details = (
+            f"Username: {created_by.username} | User full name: {get_user_full_name(created_by)} | "
+            f"User email: {created_by.email or 'N/A'} | User ID: {created_by.id}"
+            if created_by
+            else "N/A"
+        )
+
+        export_generated_at = datetime.now(tz_sofia).strftime("%d/%m/%Y %H:%M:%S")
+        created_at_display = format_uk_datetime(version.created_at)
+        file_size_display = format_file_size_bytes(version.file_size)
+
+        safe_title = re.sub(r'[\\/:*?"<>|]+', " ", version.document.title).strip()
+        safe_title = re.sub(r"\s+", " ", safe_title)
+        ascii_title = slugify(safe_title)
+        if not ascii_title:
+            ascii_title = "document"
+        filename = f"{ascii_title} v{version.version_number}"
+
+        file_url = version.file_path or "N/A"
 
         if file_format == "txt":
-            header = (
-                f"DOC: {version.document.title}\n"
-                f"VER: {version.version_number}\n"
-                f"BY: {version.created_by.username}\n" + ("-" * 20) + "\n\n"
-            )
-
-            content = header + (
-                version.content or "Binary file content cannot be displayed."
+            content = (
+                f"DOCUMENT EXPORT\n"
+                f"- {export_generated_at}\n"
+                f"{'-'*40}\n"
+                f"Document Title: {version.document.title}\n"
+                f"Version: {version.version_number}\n"
+                f"Status: {version.status}\n"
+                f"Created By: {created_by_details}\n"
+                f"Version Created At: {created_at_display} (BG Time)\n"
+                f"Is Active: {version.is_active}\n"
+                f"File URL: {file_url}\n"
+                f"File Size: {file_size_display}\n"
+                f"Checksum: {version.checksum or 'N/A'}\n"
+                f"Parent Version: {version.parent_version_id or 'None'}\n"
+                f"{'-'*40}\n"
             )
 
             response = HttpResponse(content, content_type="text/plain")
@@ -418,32 +649,81 @@ class VersionExportView(APIView):
 
         if file_format == "pdf":
             buffer = io.BytesIO()
-            p = canvas.Canvas(buffer, pagesize=letter)
+            c = canvas.Canvas(buffer, pagesize=letter)
+            page_width, page_height = letter
 
-            p.setFont("Helvetica-Bold", 14)
-            p.drawString(50, 750, f"Document: {version.document.title}")
+            left_margin = 50
+            right_margin = 50
+            max_text_width = page_width - left_margin - right_margin
+            y = page_height - 40
 
-            p.setFont("Helvetica", 10)
-            p.drawString(
-                50,
-                735,
-                f"Version: {version.version_number} | Author: {version.created_by.username}",
-            )
+            def line(text, font="Helvetica", size=10, gap=15):
+                nonlocal y
+                c.setFont(font, size)
+                words = str(text).split(" ")
+                wrapped_lines = []
+                current_line = ""
 
-            p.line(50, 725, 550, 725)
+                for word in words:
+                    # Break single long tokens (e.g. URLs) so they never overflow margins.
+                    if c.stringWidth(word, font, size) > max_text_width:
+                        if current_line:
+                            wrapped_lines.append(current_line)
+                            current_line = ""
+                        chunk = ""
+                        for ch in word:
+                            if c.stringWidth(f"{chunk}{ch}", font, size) <= max_text_width:
+                                chunk = f"{chunk}{ch}"
+                            else:
+                                wrapped_lines.append(chunk)
+                                chunk = ch
+                        if chunk:
+                            wrapped_lines.append(chunk)
+                    else:
+                        candidate = word if not current_line else f"{current_line} {word}"
+                        if c.stringWidth(candidate, font, size) <= max_text_width:
+                            current_line = candidate
+                        else:
+                            if current_line:
+                                wrapped_lines.append(current_line)
+                            current_line = word
+                if current_line:
+                    wrapped_lines.append(current_line)
 
-            p.setFont("Courier", 9)
-            text = p.beginText(50, 700)
+                if not wrapped_lines:
+                    wrapped_lines = [""]
 
-            for line in (version.content or "Binary file content.").splitlines()[:60]:
-                text.textLine(line)
+                for wrapped in wrapped_lines:
+                    if y <= 45:
+                        c.showPage()
+                        y = page_height - 40
+                        c.setFont(font, size)
+                    c.drawString(left_margin, y, wrapped)
+                    y -= gap
 
-            p.drawText(text)
-            p.showPage()
-            p.save()
+            line(f"DOCUMENT EXPORT", "Helvetica-Bold", 14, 20)
+            line(f"- {export_generated_at}")
+            line(f"Document: {version.document.title}")
+            line(f"Version: {version.version_number}")
+            line(f"Status: {version.status}")
+            line(f"Created By: {created_by_details}")
+            line(f"Version Created At: {created_at_display} (BG Time)")
+            line(f"Is Active: {version.is_active}")
+            line(f"File URL: {file_url}")
+            line(f"File Size: {file_size_display}")
+            line(f"Checksum: {version.checksum or 'N/A'}")
+            line(f"Parent Version: {version.parent_version_id or 'None'}")
+
+            c.showPage()
+            c.save()
 
             buffer.seek(0)
-            return FileResponse(buffer, as_attachment=True, filename=f"{filename}.pdf")
+
+            return FileResponse(
+                buffer,
+                as_attachment=True,
+                filename=f"{filename}.pdf"
+            )
 
         return Response(
             {"error": "Invalid format. Use 'pdf' or 'txt'."},

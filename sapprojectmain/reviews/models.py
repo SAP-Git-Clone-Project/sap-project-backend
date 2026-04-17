@@ -42,6 +42,10 @@ class ReviewModel(models.Model):
         db_table = "reviews"
         # NOTE: Sorts reviews by most recent completion date
         ordering = ["-reviewed_at"]
+        indexes = [
+            # PERF: Common query for "my pending reviews"
+            models.Index(fields=["reviewer", "review_status"]),
+        ]
 
     def __str__(self):
         # NOTE: Formats the review for admin display and logging

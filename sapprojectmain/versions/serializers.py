@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import VersionsModel, VersionStatus
+from core.rbac import get_document_permissions, get_document_role
 
 class VersionSerializer(serializers.ModelSerializer):
     # NOTE: UI helpers to display human-readable names and version relationships
@@ -12,7 +13,11 @@ class VersionSerializer(serializers.ModelSerializer):
     document_owner_id = serializers.ReadOnlyField(source="document.created_by.id")
     document_title = serializers.ReadOnlyField(source="document.title")
     avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
+    
+    # Method fields for dynamic data
     signed_file_path = serializers.SerializerMethodField()
+    current_user_document_role = serializers.SerializerMethodField()
+    current_user_effective_permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = VersionsModel
@@ -35,6 +40,8 @@ class VersionSerializer(serializers.ModelSerializer):
             "document_owner_id",
             "document_title",
             "avatar_url",
+            "current_user_document_role",
+            "current_user_effective_permissions",
         ]
         # SECURITY: System-critical fields are protected from direct user modification
         read_only_fields = [
@@ -92,5 +99,68 @@ class VersionSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
     def get_signed_file_path(self, obj):
-        from versions.views import get_signed_url
-        return get_signed_url(obj.file_path)
+        """
+        Uses the shared utility to get a Cloudinary signed URL.
+        Imported inside to prevent circular import issues.
+        """
+        if not obj.file_path:
+            return None
+        try:
+            from versions.views import get_signed_url
+            return get_signed_url(obj.file_path)
+        except Exception:
+            return obj.file_path
+
+    def get_current_user_document_role(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+        return get_document_role(user, obj.document, version=obj)
+
+    def get_current_user_effective_permissions(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return []
+        return sorted(get_document_permissions(user, obj.document, version=obj))
+
+
+class VersionSummarySerializer(serializers.ModelSerializer):
+    """
+    PERF: Lightweight representation for list endpoints (documents list, review inbox).
+    Avoids large payloads (full `content`) and expensive per-item work (signed URLs).
+    """
+
+    creator_name = serializers.ReadOnlyField(source="created_by.username")
+    avatar_url = serializers.ReadOnlyField(source="created_by.avatar")
+    parent_version_number = serializers.ReadOnlyField(source="parent_version.version_number")
+    document_title = serializers.ReadOnlyField(source="document.title")
+    document_id = serializers.ReadOnlyField(source="document.id")
+    content = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VersionsModel
+        fields = [
+            "id",
+            "document_id",
+            "document_title",
+            "created_by",
+            "creator_name",
+            "avatar_url",
+            "version_number",
+            "status",
+            "created_at",
+            "is_active",
+            "parent_version",
+            "parent_version_number",
+            "content",
+        ]
+
+    def get_content(self, obj):
+        # Keep Review inbox fast: return a short preview, not the full blob.
+        text = obj.content or ""
+        max_len = 240
+        if len(text) <= max_len:
+            return text
+        return text[:max_len].rstrip() + "…"

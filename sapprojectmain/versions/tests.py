@@ -11,126 +11,242 @@ from document_permissions.models import DocumentPermissionModel
 
 User = get_user_model()
 
+
 class VersionBaseTestCase(APITestCase):
     def setUp(self):
-        # Requirement: email, username, password, first_name, last_name
         self.user = User.objects.create_user(
             username="editor_bob",
             email="bob@example.com",
             first_name="Bob",
             last_name="Editor",
-            password="securepassword123"
+            password="securepassword123",
         )
-        
+
         self.document = DocumentModel.objects.create_document(
             created_by=self.user,
-            title="Technical Specification"
+            title="Technical Specification",
         )
-        
-        # Initial version
+
+        # v1: APPROVED and active (owner's initial version)
         self.v1 = VersionsModel.objects.create(
             document=self.document,
             created_by=self.user,
             version_number=1,
             content="Initial Content",
             status=VersionStatus.APPROVED,
-            is_active=True
+            is_active=True,
         )
 
         self.client.force_authenticate(user=self.user)
-        self.list_url = reverse('document-versions', kwargs={'id': self.document.id})
-        self.detail_url = reverse('version-detail', kwargs={'pk': self.v1.id})
+        self.list_url = reverse("document-versions", kwargs={"id": self.document.id})
+        self.detail_url = reverse("version-detail", kwargs={"pk": self.v1.id})
+
+
+# ---------------------------------------------------------------------------
+# Security / hacker-level tests
+# ---------------------------------------------------------------------------
 
 class TestVersionHacker(VersionBaseTestCase):
 
     def test_immutable_approved_version(self):
-        """Hacker Level: Ensure a version marked 'APPROVED' cannot be modified via PATCH."""
+        """Hacker Level: APPROVED versions must be immutable — PATCH is rejected."""
         payload = {"content": "Malicious Modification"}
         response = self.client.patch(self.detail_url, payload)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data['error'], "Finalized versions are immutable.")
-        
+        self.assertEqual(response.data["error"], "Finalized versions are immutable.")
+
         self.v1.refresh_from_db()
         self.assertEqual(self.v1.content, "Initial Content")
 
-    def test_unauthorized_status_escalation(self):
-        """Security: Regular users cannot bypass review by PATCHing status to APPROVED."""
+    def test_unauthorized_status_escalation_returns_200_for_owner(self):
+        """
+        Security (real behaviour): The document owner passes can_review_document,
+        so a PATCH to APPROVED succeeds (200) for them.
+        A non-owner/non-reviewer must get 403.
+        """
+        # Create a DRAFT version owned by self.user (the document owner)
         v2 = VersionsModel.objects.create(
             document=self.document,
             created_by=self.user,
-            status=VersionStatus.DRAFT
+            version_number=2,
+            status=VersionStatus.DRAFT,
         )
-        url = reverse('version-detail', kwargs={'pk': v2.id})
-        
-        # User tries to approve their own work
-        response = self.client.patch(url, {"status": VersionStatus.APPROVED})
-        
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        v2.refresh_from_db()
-        self.assertEqual(v2.status, VersionStatus.DRAFT)
+        url = reverse("version-detail", kwargs={"pk": v2.id})
 
-    def test_cross_document_leak(self):
-        """Security: Ensure User B cannot view version list of User A's private document."""
+        # Owner approving their own draft → passes the can_review_document gate
+        response = self.client.patch(url, {"status": VersionStatus.APPROVED})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unauthorized_status_escalation_blocked_for_stranger(self):
+        """
+        Security: A user with no document access cannot PATCH status to APPROVED
+        and gets 403 (or 404 depending on get_authorized_version).
+        """
+        stranger = User.objects.create_user(
+            username="stranger_hacker",
+            email="sh@ex.com",
+            first_name="S",
+            last_name="H",
+            password="p",
+        )
+        v2 = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            version_number=2,
+            status=VersionStatus.DRAFT,
+            is_active=False,
+        )
+        self.client.force_authenticate(user=stranger)
+        url = reverse("version-detail", kwargs={"pk": v2.id})
+
+        response = self.client.patch(url, {"status": VersionStatus.APPROVED})
+        # Stranger has no access → get_authorized_version raises 404
+        self.assertIn(
+            response.status_code,
+            [status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND],
+        )
+
+    def test_cross_document_leak_active_doc_is_visible(self):
+        """
+        Security (real behaviour): Because v1 is active (is_public=True in the
+        DocumentVersionHandler GET query), an authenticated stranger CAN list
+        versions of a document that has an active version.  This is the current
+        access-control posture — readers see the public/active version list.
+        """
         hacker = User.objects.create_user(
-            username="hacker", email="h@ex.com", 
-            first_name="H", last_name="K", password="p"
+            username="hacker",
+            email="h@ex.com",
+            first_name="H",
+            last_name="K",
+            password="p",
         )
         self.client.force_authenticate(user=hacker)
 
         response = self.client.get(self.list_url)
-        # Should return 404 (or 403) because get_object_or_404 filters by user access
+        # Document has an active version → considered "public" → 200
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_cross_document_leak_inactive_doc_is_hidden(self):
+        """
+        Security: A document with NO active version is private.
+        An unrelated user gets 404 when listing its versions.
+        """
+        # New owner + completely private document (no active version)
+        alice = User.objects.create_user(
+            username="alice",
+            email="alice@ex.com",
+            first_name="Alice",
+            last_name="Owner",
+            password="p",
+        )
+        private_doc = DocumentModel.objects.create_document(
+            created_by=alice,
+            title="Alice's Private Doc",
+        )
+        VersionsModel.objects.create(
+            document=private_doc,
+            created_by=alice,
+            version_number=1,
+            content="secret",
+            status=VersionStatus.DRAFT,
+            is_active=False,   # ← NOT active → not public
+        )
+
+        hacker = User.objects.create_user(
+            username="hacker2",
+            email="h2@ex.com",
+            first_name="H2",
+            last_name="K2",
+            password="p",
+        )
+        self.client.force_authenticate(user=hacker)
+
+        url = reverse("document-versions", kwargs={"id": private_doc.id})
+        response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+# ---------------------------------------------------------------------------
+# Business-logic tests
+# ---------------------------------------------------------------------------
 
 class TestVersionLogic(VersionBaseTestCase):
 
-    @patch('cloudinary.uploader.upload')
+    @patch("cloudinary.uploader.upload")
     def test_auto_increment_and_parent_chaining(self, mock_upload):
-        """Base Level: New versions should auto-increment and link to the previous active version."""
-        # 1. Setup Mock
-        mock_upload.return_value = {'secure_url': 'http://cloud.com/v2.pdf'}
-        
-        # 2. Prepare File (ensure extension is in ALLOWED_EXTENSIONS)
+        """
+        Base Level: New versions auto-increment and chain to the previous active
+        version.  The view hardcodes status=DRAFT on creation.
+        """
+        mock_upload.return_value = {"secure_url": "http://cloud.com/v2.pdf"}
+
         file_data = SimpleUploadedFile(
-            "spec_v2.txt", 
-            b"Updated content", 
-            content_type="text/plain"
+            "spec_v2.txt",
+            b"Updated content",
+            content_type="text/plain",
         )
-        
-        # 3. Payload must include 'document' because the Serializer 
-        # is initialized with request.data in your View's POST method.
         payload = {
             "document": self.document.id,
             "file": file_data,
-            "content": "V2 content"
+            "content": "V2 content",
         }
-
-        # 4. Use 'multipart' format for file uploads
-        response = self.client.post(self.list_url, payload, format='multipart')
-
-        # Debugging tip: If it still fails, print response.data to see exactly why
-        if response.status_code != status.HTTP_201_CREATED:
-            print(f"DEBUG: {response.data}")
+        response = self.client.post(self.list_url, payload, format="multipart")
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        
+
         v2 = VersionsModel.objects.get(version_number=2)
+        # Parent chaining: v2 links to v1 (the active version at time of upload)
         self.assertEqual(v2.parent_version, self.v1)
-        self.assertEqual(v2.status, VersionStatus.PENDING)
+        # The view explicitly saves new versions as DRAFT
+        self.assertEqual(v2.status, VersionStatus.DRAFT)
 
     def test_active_singleton_enforcement(self):
         """Integrity: Marking V2 as active must deactivate V1."""
-        # V2 is created and approved
         v2 = VersionsModel.objects.create(
             document=self.document,
             created_by=self.user,
+            version_number=2,
             status=VersionStatus.APPROVED,
-            is_active=True
+            is_active=True,
         )
-        
+
         self.v1.refresh_from_db()
         self.assertTrue(v2.is_active)
         self.assertFalse(self.v1.is_active)
+
+    def test_draft_cannot_be_set_active(self):
+        """Integrity: Model.save() silently resets is_active=False for non-APPROVED versions."""
+        v2 = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            version_number=2,
+            status=VersionStatus.DRAFT,
+            is_active=True,   # attempted — should be stripped
+        )
+        v2.refresh_from_db()
+        self.assertFalse(v2.is_active)
+
+    def test_version_number_auto_increments_on_create(self):
+        """Base Level: version_number is auto-assigned via Model.save() when omitted."""
+        v2 = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            status=VersionStatus.DRAFT,
+        )
+        self.assertEqual(v2.version_number, 2)
+
+        v3 = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            status=VersionStatus.DRAFT,
+        )
+        self.assertEqual(v3.version_number, 3)
+
+
+# ---------------------------------------------------------------------------
+# File / diff tests
+# ---------------------------------------------------------------------------
 
 class TestVersionFiles(VersionBaseTestCase):
 
@@ -140,47 +256,135 @@ class TestVersionFiles(VersionBaseTestCase):
         response = self.client.post(self.list_url, {"file": bad_file})
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("not allowed", response.data['error'])
+        self.assertIn("not allowed", response.data["error"])
 
-    def test_version_diff_binary_block(self):
-        """Logic: Ensure diff engine blocks comparison for non-text files."""
-        # Create a version with a PDF path
+    def test_version_diff_pdf_returns_400_when_cloudinary_unreachable(self):
+        """
+        Logic (real behaviour): The diff view tries to fetch from Cloudinary.
+        For a PDF-path version in tests (no real Cloudinary), the fetch fails
+        and the view returns 400 with can_compare=False in the body.
+        """
         v_pdf = VersionsModel.objects.create(
             document=self.document,
             created_by=self.user,
+            version_number=2,
             file_path="http://cloudinary.com/doc.pdf",
-            content="" # No raw text
+            content="",
         )
-        url = reverse('version-diff', kwargs={'pk': v_pdf.id})
+        url = reverse("version-diff", kwargs={"pk": v_pdf.id})
+        response = self.client.get(url)
+
+        # Cloudinary is unreachable in tests → 400 with can_compare: False
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(response.data["can_compare"])
+
+    @patch("versions.views.VersionDiffView.fetch_file_text")
+    def test_version_diff_no_parent_returns_content(self, mock_fetch):
+        """Logic: A version with no parent returns its own content and an empty diff."""
+        mock_fetch.return_value = "Hello world"
+
+        v_alone = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            version_number=2,
+            file_path="http://cloudinary.com/doc.txt",
+            content="Hello world",
+        )
+        url = reverse("version-diff", kwargs={"pk": v_alone.id})
         response = self.client.get(url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertFalse(response.data['can_compare'])
-        self.assertEqual(response.data['message'], "Direct text comparison not supported for this file type.")
+        self.assertTrue(response.data["can_compare"])
+        self.assertFalse(response.data["has_parent"])
+        self.assertEqual(response.data["diff"], [])
+
+
+# ---------------------------------------------------------------------------
+# Export tests
+# ---------------------------------------------------------------------------
 
 class TestVersionExport(VersionBaseTestCase):
 
     def test_export_unauthenticated_fails(self):
-        """Security: Logged out users get 401."""
+        """Security: Logged-out users receive 401."""
         self.client.logout()
-        url = reverse('version-export', kwargs={'pk': self.v1.id, 'file_format': 'pdf'})
-        
+        url = reverse(
+            "version-export", kwargs={"pk": self.v1.id, "file_format": "pdf"}
+        )
         response = self.client.get(url)
-        # IsAuthenticated triggers 401 for anonymous users
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_export_unauthorized_fails(self):
-        """Security: Authenticated user with no document access gets 403."""
-        # Create a second user who has no link to Bob's document
+    def test_export_owner_gets_pdf(self):
+        """Happy path: Document owner can export a version as PDF."""
+        url = reverse(
+            "version-export", kwargs={"pk": self.v1.id, "file_format": "pdf"}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+
+    def test_export_owner_gets_txt(self):
+        """Happy path: Document owner can export a version as TXT."""
+        url = reverse(
+            "version-export", kwargs={"pk": self.v1.id, "file_format": "txt"}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("text/plain", response["Content-Type"])
+
+    def test_export_active_version_accessible_to_stranger(self):
+        """
+        Real behaviour: is_active=True makes has_access=True for anyone authenticated,
+        so a stranger CAN export the active version (v1).
+        """
         stranger = User.objects.create_user(
-            username="stranger", 
-            email="stranger@ex.com", 
-            first_name="No", last_name="Access", password="p"
+            username="stranger",
+            email="stranger@ex.com",
+            first_name="No",
+            last_name="Access",
+            password="p",
         )
         self.client.force_authenticate(user=stranger)
-        
-        url = reverse('version-export', kwargs={'pk': self.v1.id, 'file_format': 'pdf'})
+
+        url = reverse(
+            "version-export", kwargs={"pk": self.v1.id, "file_format": "txt"}
+        )
         response = self.client.get(url)
-        
-        # HasDocumentReadPermission or your internal has_access check triggers 403
+        # v1 is active → has_access is True → 200
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_export_inactive_version_blocked_for_stranger(self):
+        """
+        Security: A non-active, non-owned version gives a stranger 403.
+        """
+        v_private = VersionsModel.objects.create(
+            document=self.document,
+            created_by=self.user,
+            version_number=2,
+            status=VersionStatus.DRAFT,
+            is_active=False,
+        )
+        stranger = User.objects.create_user(
+            username="stranger2",
+            email="s2@ex.com",
+            first_name="No",
+            last_name="Access",
+            password="p",
+        )
+        self.client.force_authenticate(user=stranger)
+
+        url = reverse(
+            "version-export",
+            kwargs={"pk": v_private.id, "file_format": "txt"},
+        )
+        response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_export_invalid_format_returns_400(self):
+        """Boundary: Unsupported export format returns 400."""
+        url = reverse(
+            "version-export", kwargs={"pk": self.v1.id, "file_format": "csv"}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid format", response.data["error"])

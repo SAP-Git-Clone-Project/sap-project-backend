@@ -1,6 +1,7 @@
 from rest_framework.permissions import BasePermission, IsAuthenticated, SAFE_METHODS
 from document_permissions.models import DocumentPermissionModel
 from django.db.models import Q
+from core.rbac import can_delete_document, can_review_document, can_write_document
 
 # --- SYSTEM PERMISSIONS (User Management) ---
 
@@ -97,31 +98,32 @@ class HasDocumentReadPermission(BasePermission):
     def has_object_permission(self, request, view, obj):
         user = request.user
 
+        # Superusers always have access
         if user.is_superuser:
             return True
 
+        # Owners always have access
         if hasattr(obj, "created_by") and obj.created_by == user:
             return True
 
         # Determine if we are looking at a Document or a Version
-        doc = None
-        target_version = None
+        # Assuming 'obj' is either DocumentModel or VersionsModel
+        is_version = hasattr(obj, "document") and not hasattr(obj, "document_permissions")
+        doc = obj.document if is_version else obj
 
-        if hasattr(obj, "document_permissions"):  # It's a DocumentModel
-            doc = obj
-            target_version = None
-        elif hasattr(obj, "document"):  # It's a VersionModel
-            doc = obj.document
-            target_version = obj
+        if hasattr(doc, "versions"):
+            if doc.versions.filter(is_active=True).exists():
+                return True
 
+        # If no active version exists, fallback to checking the DocumentPermissionModel
         if doc:
             permission_query = Q(user=user)
             
-            if target_version:
-                # If viewing a version, allow if global OR version-specific
-                permission_query &= (Q(version=target_version) | Q(version__isnull=True))
+            if is_version:
+                # If viewing a specific version, allow if global OR version-specific permission exists
+                permission_query &= (Q(version=obj) | Q(version__isnull=True))
             else:
-                # If viewing the document root, only global permissions count
+                # If viewing the document root, only global (non-version-specific) permissions count
                 permission_query &= Q(version__isnull=True)
 
             return doc.document_permissions.filter(permission_query).exists()
@@ -157,19 +159,28 @@ class HasDocumentDeletePermission(BasePermission):
             return True
 
         kwargs = getattr(view, "kwargs", {})
+        doc_id = request.data.get("document")
+        row_id = kwargs.get("id")
 
-        doc_id = (
-            request.data.get("document")
-            or kwargs.get("id")   # ✅ FIXED
-        )
+        if doc_id:
+            return DocumentPermissionModel.objects.filter(
+                user=user,
+                document_id=doc_id,
+                permission_type="DELETE",
+                version__isnull=True,
+            ).exists()
 
-        if not doc_id:
+        if not row_id:
             return False
 
+        target_permission = DocumentPermissionModel.objects.filter(id=row_id).first()
+        if not target_permission:
+            return False
         return DocumentPermissionModel.objects.filter(
             user=user,
-            document_id=doc_id,
+            document=target_permission.document,
             permission_type="DELETE",
+            version__isnull=True,
         ).exists()
 
     def has_object_permission(self, request, view, obj):
@@ -180,9 +191,8 @@ class HasDocumentDeletePermission(BasePermission):
         if user.is_superuser:
             return True
 
-        return obj.document.document_permissions.filter(
-            user=user, permission_type="DELETE"
-        ).exists()
+        document = obj.document if hasattr(obj, "document") else obj
+        return can_delete_document(user, document)
 
 
 class IsReviewerForDocument(BasePermission):
@@ -209,9 +219,7 @@ class IsReviewerForDocument(BasePermission):
 
         # Check if a permission record exists for this User + this Document
         # with the specific type 'APPROVE'
-        return DocumentPermissionModel.objects.filter(
-            document=obj.version.document, user=user, permission_type="APPROVE"
-        ).exists()
+        return can_review_document(user, obj.version.document, version=obj.version)
 
 
 class HasDocumentWritePermission(BasePermission): 
@@ -221,6 +229,5 @@ class HasDocumentWritePermission(BasePermission):
             return False
         if user.is_superuser:
             return True
-        return obj.document_permissions.filter(
-            user=user, permission_type="WRITE", version_isnull=True
-        ).exists()
+        document = obj.document if hasattr(obj, "document") else obj
+        return can_write_document(user, document)

@@ -7,5 +7,6 @@ class NotificationsConfig(AppConfig):
     name = "notifications"
 
     def ready(self):
-        # IMP: Registers signal handlers to ensure they are active on startup
-        import notifications.signals
+        # Notification and audit signal handlers are centrally registered
+        # from audit_log.signals via AuditLogConfig.ready().
+        return

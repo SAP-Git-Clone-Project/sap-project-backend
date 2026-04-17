@@ -5,6 +5,9 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 import re
 
+from .models import UserModel
+from user_roles.models import Role, UserRole
+from core.rbac import get_global_roles
 from .models import UserModel , UserRoleModel, RoleChoices
 
 # VALIDATORS
@@ -65,7 +68,13 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         # NOTE: Delegates to custom manager to handle password hashing
-        return UserModel.objects.create_user(**validated_data)
+        user = UserModel.objects.create_user(**validated_data)
+        reader_role, _ = Role.objects.get_or_create(
+            role_name=Role.RoleName.READER,
+            defaults={"description": "Default role for newly registered users."},
+        )
+        UserRole.objects.get_or_create(user=user, role=reader_role)
+        return user
 
 
 # --- LOGIN SERIALIZER ---
@@ -87,6 +96,7 @@ class LoginSerializer(serializers.Serializer):
 
 # --- USER PROFILE SERIALIZER ---
 class UserSerializer(serializers.ModelSerializer):
+    global_roles = serializers.SerializerMethodField()
     password = serializers.CharField(
         write_only=True,
         required=False,
@@ -107,6 +117,7 @@ class UserSerializer(serializers.ModelSerializer):
             "is_staff",
             "is_superuser",
             "created_at",
+            "global_roles",
         ]
         # SECURITY: Prevents self-escalation of privileges via profile updates
         read_only_fields = [
@@ -115,6 +126,7 @@ class UserSerializer(serializers.ModelSerializer):
             "is_superuser",
             "is_active",
             "created_at",
+            "global_roles",
         ]
 
     def validate_email(self, value):
@@ -140,11 +152,33 @@ class UserSerializer(serializers.ModelSerializer):
         instance.save()
         return instance
 
+    def get_global_roles(self, obj):
+        return sorted(get_global_roles(obj))
+
 
 # --- USER SEARCH SERIALIZER ---
 class UserSearchSerializer(serializers.ModelSerializer):
+    global_roles = serializers.SerializerMethodField()
+    eligible_for_reviewer = serializers.SerializerMethodField()
     # NOTE: Returns minimal public info for user invitation search
     class Meta:
         model = UserModel
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "avatar",
+            "global_roles",
+            "eligible_for_reviewer",
+        ]
+        read_only_fields = ["id", "username", "email"]
+
+    def get_global_roles(self, obj):
+        return sorted(get_global_roles(obj))
+
+    def get_eligible_for_reviewer(self, obj):
+        return Role.RoleName.REVIEWER in get_global_roles(obj)
         fields = ["id", "username", "email", "first_name", "last_name", "avatar"]
         read_only_fields = ["id", "username", "email"]

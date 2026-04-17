@@ -21,31 +21,31 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["user__username", "user__email", "action_type", "document__title", "description"]
 
     def get_queryset(self):
-        # Start with the base queryset
         queryset = self.queryset.all()
 
-        # 1. Multiple Action Filter (Handled as a list)
-        # Frontend will send: ?action=CREATE&action=DELETE
         actions = self.request.query_params.getlist("action")
         if actions:
             queryset = queryset.filter(action_type__in=actions)
 
-        # 2. Specific User Filter
         user_id = self.request.query_params.get("user_id")
         if user_id:
-            queryset = queryset.filter(user_id=user_id)
+            try:
+                import uuid
+                uuid.UUID(user_id)  # validate format
+                queryset = queryset.filter(user_id=user_id)
+            except (ValueError, TypeError):
+                return queryset.none()
 
-        # 3. Smart Date Range Filtering
+        document_id = self.request.query_params.get("document_id")
+        if document_id:
+            queryset = queryset.filter(document_id=document_id)
+
         start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
-
         if start_date:
-            # Filters from 00:00:00 of the chosen day
             queryset = queryset.filter(timestamp__gte=f"{start_date} 00:00:00")
-        
+
+        end_date = self.request.query_params.get("end_date")
         if end_date:
-            # Filters until 23:59:59 of the chosen day
             queryset = queryset.filter(timestamp__lte=f"{end_date} 23:59:59")
 
-        # Return ordered by newest first
         return queryset.order_by("-timestamp")

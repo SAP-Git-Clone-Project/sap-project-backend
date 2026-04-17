@@ -21,7 +21,10 @@ from versions.models import VersionsModel
 from .serializers import DocumentSerializer
 from document_permissions.serializers import DocumentPermissionSerializer
 from document_permissions.models import DocumentPermissionModel
+from core.rbac import user_has_global_role
+from user_roles.models import Role
 from rest_framework.pagination import PageNumberPagination
+from itertools import groupby
 
 
 class DocumentPagination(PageNumberPagination):
@@ -60,6 +63,7 @@ def initiate_deletion_with_notifications(request, document):
     reviewers = DocumentPermissionModel.objects.filter(
         document=document,
         permission_type="APPROVE",
+        version__isnull=True,
     ).select_related("user")
 
     if not reviewers.exists():
@@ -125,10 +129,31 @@ class DocumentDetailView(APIView):
         return [IsAuthenticatedUser()]
 
     def get_object(self, id):
+        user = self.request.user
         try:
-            if self.request.user.is_superuser:
-                return DocumentModel.objects.all().get(pk=id)
-            return DocumentModel.objects.active_documents().get(pk=id)
+            # 1. Staff/Superusers skip checks
+            if user.is_staff or user.is_superuser:
+                return DocumentModel.objects.get(pk=id)
+
+            # 2. Main query: User's visible docs OR any document with an active version
+            # We use .distinct() because the join with versions might return multiple rows
+            document = DocumentModel.objects.filter(
+                Q(pk=id) & (
+                    Q(id__in=DocumentModel.objects.visible_documents(user=user).values('id')) |
+                    Q(versions__is_active=True)
+                )
+            ).distinct().first()
+
+            # 3. Fallback: Creator checking their own deleted trash
+            if not document:
+                document = DocumentModel.objects.filter(
+                    pk=id, 
+                    created_by=user, 
+                    is_deleted=True
+                ).first()
+
+            return document
+
         except (DocumentModel.DoesNotExist, ValueError):
             return None
 
@@ -147,6 +172,9 @@ class DocumentDetailView(APIView):
             return Response(
                 {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
             )
+        
+        self.check_object_permissions(request, document)
+
         serializer = DocumentSerializer(
             document, data=request.data, partial=True, context={"request": request}
         )
@@ -180,11 +208,42 @@ class DocumentListCreateView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents().select_related('created_by')
         else:
-            documents = DocumentModel.objects.visible_documents(user=user)
+            visible_doc_ids = DocumentModel.objects.visible_documents(user=user).values_list(
+                "id", flat=True
+            )
+            documents = (
+                DocumentModel.objects.filter(
+                    Q(id__in=visible_doc_ids) | Q(created_by=user, is_deleted=True)
+                )
+                .distinct()
+                .select_related("created_by")
+            )
 
-        documents = documents.prefetch_related(
-            Prefetch('versions', queryset=VersionsModel.objects.all().order_by('-version_number'), to_attr='prefetched_versions')
-        ).order_by("-updated_at")
+        # PERF:
+        # - Fetch only what the list view needs for "active_version" rendering.
+        # - Prefetch current user's permission rows once to avoid N+1 in serializer.
+        documents = (
+            documents.select_related("created_by")
+            .prefetch_related(
+                Prefetch(
+                    "versions",
+                    queryset=VersionsModel.objects.filter(is_active=True).select_related(
+                        "created_by",
+                        "parent_version",
+                        "document",
+                    ),
+                    to_attr="prefetched_active_versions",
+                ),
+                Prefetch(
+                    "document_permissions",
+                    queryset=DocumentPermissionModel.objects.filter(
+                        user=user, version__isnull=True
+                    ).only("document_id", "permission_type", "user_id", "version_id"),
+                    to_attr="prefetched_current_user_permissions",
+                ),
+            )
+            .order_by("-updated_at")
+        )
 
         status = self.request.query_params.get("status")
         if status:
@@ -201,6 +260,23 @@ class DocumentListCreateView(APIView):
         # Apply pagination
         paginator = DocumentPagination()
         page = paginator.paginate_queryset(documents, request)
+
+        # PERF: If a document has no active version, the serializer may need the latest version
+        # (for owners/superusers/users with permissions). Fetch those latest versions in bulk.
+        page_docs = list(page or [])
+        if page_docs:
+            doc_ids = [d.id for d in page_docs]
+            latest_versions = (
+                VersionsModel.objects.filter(document_id__in=doc_ids)
+                .select_related("created_by", "parent_version", "document")
+                .order_by("document_id", "-version_number")
+            )
+            latest_by_doc_id = {}
+            for doc_id, versions in groupby(latest_versions, key=lambda v: v.document_id):
+                latest_by_doc_id[doc_id] = next(versions, None)
+            for d in page_docs:
+                d._latest_version = latest_by_doc_id.get(d.id)
+
         serializer = DocumentSerializer(page, many=True, context={"request": request})
         return paginator.get_paginated_response(serializer.data)
 
@@ -208,6 +284,13 @@ class DocumentListCreateView(APIView):
         if request.user.is_staff:
             return Response(
                 {"detail": "Staff users cannot create documents."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not request.user.is_superuser and not user_has_global_role(
+            request.user, Role.RoleName.AUTHOR
+        ):
+            return Response(
+                {"detail": "Only users with author role can create documents."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         serializer = DocumentSerializer(data=request.data, context={"request": request})
@@ -227,11 +310,58 @@ class DocumentListGetAllView(APIView):
         elif user.is_staff:
             documents = DocumentModel.objects.active_documents()
         else:
-            documents = DocumentModel.objects.visible_documents(user=user)
+            visible_doc_ids = DocumentModel.objects.visible_documents(user=user).values_list(
+                "id", flat=True
+            )
+            documents = DocumentModel.objects.filter(
+                Q(id__in=visible_doc_ids) | Q(created_by=user, is_deleted=True)
+            ).distinct()
 
-        documents = documents.order_by("-updated_at")
+        # PERF: This endpoint is used by the frontend for dashboard stats.
+        # Keep it lightweight: only prefetch active versions + current user perms,
+        # and avoid expensive "latest version fallback" work in the serializer.
+        documents = (
+            documents.select_related("created_by")
+            .prefetch_related(
+                Prefetch(
+                    "versions",
+                    queryset=VersionsModel.objects.filter(is_active=True).select_related(
+                        "created_by",
+                        "parent_version",
+                        "document",
+                    ),
+                    to_attr="prefetched_active_versions",
+                ),
+                Prefetch(
+                    "document_permissions",
+                    queryset=DocumentPermissionModel.objects.filter(
+                        user=user, version__isnull=True
+                    ).only("document_id", "permission_type", "user_id", "version_id"),
+                    to_attr="prefetched_current_user_permissions",
+                ),
+            )
+            .order_by("-updated_at")
+        )
 
-        serializer = DocumentSerializer(documents, many=True, context={'request': request})
+        # PERF: provide latest version in bulk for stats_mode fallback
+        # (active version if present, else latest by version_number).
+        doc_list = list(documents)
+        if doc_list:
+            doc_ids = [d.id for d in doc_list]
+            latest_versions = (
+                VersionsModel.objects.filter(document_id__in=doc_ids)
+                .select_related("created_by", "parent_version", "document")
+                .order_by("document_id", "-version_number")
+            )
+            latest_by_doc_id = {}
+            for doc_id, versions in groupby(latest_versions, key=lambda v: v.document_id):
+                latest_by_doc_id[doc_id] = next(versions, None)
+            for d in doc_list:
+                d._latest_version = latest_by_doc_id.get(d.id)
+
+        serializer = DocumentSerializer(
+            doc_list, many=True, context={"request": request, "stats_mode": True}
+        )
         return Response(serializer.data)
 
 
@@ -252,6 +382,35 @@ class ShareDocumentView(APIView):
             serializer.save(document=document)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DocumentRestoreView(APIView):
+    permission_classes = [IsAuthenticatedUser]
+
+    def post(self, request, id):
+        try:
+            document = DocumentModel.objects.all().get(pk=id)
+        except (DocumentModel.DoesNotExist, ValueError):
+            return Response(
+                {"detail": "Document not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        is_owner = str(document.created_by_id) == str(request.user.id)
+        if not (request.user.is_superuser or request.user.is_staff or is_owner):
+            return Response(
+                {"detail": "You do not have permission to restore this document."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not document.is_deleted:
+            return Response(
+                {"detail": "Document is already active."},
+                status=status.HTTP_200_OK,
+            )
+
+        document.restore()
+        serializer = DocumentSerializer(document, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +468,12 @@ class DocumentDeletionDecisionView(APIView):
             if deletion_request:
                 deletion_request.status = "REJECTED"
                 deletion_request.save()
+
+            # Ensure the document is NOT deleted.
+            # If it was soft-deleted by an earlier action, restore it.
+            if document.is_deleted:
+                document.restore()
+                
             # Notify the owner that deletion was rejected
             notify_owner_of_decision(document, deletion_request, accepted=False)
             return Response({"detail": "Deletion rejected."}, status=status.HTTP_200_OK)
@@ -358,23 +523,18 @@ class DocumentRequestDeleteView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def post(self, request, id):
-        try:
-            document = self.get_object(id)
-            if not document:
-                return Response(
-                    {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
-                )
+        document = self.get_object(id)
+        if not document:
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
-            return initiate_deletion_with_notifications(request, document)
-
-        except Exception as e:
-            traceback.print_exc()
-            return Response({"detail": "Internal server error"}, status=500)
-
+        return initiate_deletion_with_notifications(request, document)
+        
     def get_object(self, id):
         try:
             if self.request.user.is_superuser:
                 return DocumentModel.objects.get(pk=id)
-            return DocumentModel.objects.active_documents().get(pk=id)
+            return DocumentModel.objects.all().get(pk=id)
         except (DocumentModel.DoesNotExist, ValueError):
             return None

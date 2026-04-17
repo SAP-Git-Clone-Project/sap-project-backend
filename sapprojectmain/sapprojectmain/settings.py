@@ -48,14 +48,15 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     # Started apps
-    "users",
-    "audit_log",
+    "users.apps.UsersConfig",
+    "audit_log.apps.AuditLogConfig",
     "document_permissions",
     "documents",
     "reviews",
     "versions",
     "notifications.apps.NotificationsConfig",
     "core",
+    "user_roles",
 ]
 
 MIDDLEWARE = [

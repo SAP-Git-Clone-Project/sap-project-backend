@@ -17,6 +17,8 @@ from core.permissions import (
 from .models import DocumentPermissionModel, DocumentPermissionRequestModel
 from .serializers import DocumentPermissionSerializer
 from notifications.models import NotificationModel
+from versions.models import VersionsModel
+from documents.models import DocumentModel
 
 # --- MANAGEMENT ACTIONS ---
 
@@ -95,32 +97,83 @@ class DeleteDocumentPermissionView(generics.DestroyAPIView):
 
 
 class GetDocumentMembersView(generics.ListAPIView):
-    # List all users invited to one specific document
-    # URL uses doc_id to filter the document_id column
     serializer_class = DocumentPermissionSerializer
-    permission_classes = [IsAuthenticatedUser]
+    permission_classes = [IsAuthenticatedUser] 
 
     def get_queryset(self):
         raw_doc_id = self.kwargs.get("doc_id")
-            
         try:
-            doc_id = uuid.UUID(str(raw_doc_id))
+            obj_id = uuid.UUID(str(raw_doc_id))
         except (ValueError, TypeError):
-            # If not a valid UUID, return empty rather than crashing
             return DocumentPermissionModel.objects.none()
 
         user = self.request.user
+        
+        version = VersionsModel.objects.filter(pk=obj_id).first()
 
-        queryset = DocumentPermissionModel.objects.filter(
-            Q(document_id=doc_id) | Q(version_id=doc_id)
-        ).select_related("user", "document", "version").distinct()
+        if version:
+            is_version_path = True
+            document_id = version.document_id
+            version_id = version.id
+            has_active_version = version.is_active
+        else:
+            is_version_path = False
+            document_id = obj_id
+            has_active_version = VersionsModel.objects.filter(
+                document_id=document_id,
+                is_active=True
+            ).exists()
 
-        if not user.is_staff and not user.is_superuser:
-            # Check if the requesting user has any link to this doc/version
-            if not queryset.filter(user=user).exists():
-                raise PermissionDenied("You do not have access to this document's member list.")
+        # 1. Staff Bypass
+        if user.is_staff or user.is_superuser:
+            return self._apply_filters(obj_id, is_version_path)
 
-        return queryset
+        # 2. Logic to determine access
+        document_id = None
+        version_id = None
+        has_active_version = False
+
+        if is_version_path:
+            # We are looking at members of a SPECIFIC version
+            document_id = version.document_id
+            version_id = version.id
+            has_active_version = version.is_active
+        else:
+            # We are looking at members of a DOCUMENT
+            document_id = obj_id
+            # Check if ANY version of this document is active
+            has_active_version = VersionsModel.objects.filter(
+                document_id=document_id,
+                is_active=True
+            ).exists()
+
+        # 3. Check for ownership or explicit invitation
+        is_owner_or_invited = DocumentModel.objects.filter(pk=document_id).filter(
+            Q(created_by=user) | Q(document_permissions__user=user)
+        ).exists()
+
+        # 4. The Final Gate
+        # If the version/doc is active, we don't care about is_owner_or_invited
+        if not (has_active_version or is_owner_or_invited):
+            raise PermissionDenied("You do not have clearance to view this document's members.")
+
+        return self._apply_filters(document_id, is_version_path, version_id)
+
+    def _apply_filters(self, document_id, is_version_path, version_id=None):
+        # If it's a version path, we strictly show version permissions
+        if is_version_path and version_id:
+            queryset = DocumentPermissionModel.objects.filter(version_id=version_id)
+            # queryset = queryset.filter(permission_type="APPROVE")
+        else:
+            # Otherwise, show all permissions for the document
+            queryset = DocumentPermissionModel.objects.filter(document_id=document_id)
+
+        # Apply role filters from query params
+        role_filter = self.request.query_params.get("role")
+        if role_filter:
+            queryset = queryset.filter(user__user_roles__role__role_name=role_filter)
+
+        return queryset.select_related("user", "document").distinct()
 
 
 class GetAllDocumentPermissionsView(APIView):
@@ -201,9 +254,6 @@ class CreatePermissionRequestView(APIView):
     permission_classes = [IsAuthenticatedUser, HasDocumentDeletePermission]
 
     def post(self, request):
-        print("CreatePermissionRequestView HIT")
-        print(request.data)
-
         user_id = request.data.get("user")
         document_id = request.data.get("document")
         version_id = request.data.get("version")

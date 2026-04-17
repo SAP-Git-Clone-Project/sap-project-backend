@@ -171,73 +171,67 @@ class HandleDeletionRequestView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        try:
-            notification = get_object_or_404(
-                NotificationModel, pk=pk, recipient=request.user
-            )
+        notification = get_object_or_404(
+            NotificationModel, pk=pk, recipient=request.user
+        )
 
-            action = request.data.get("action")   # "accept" | "reject"
-            deletion_req = notification.deletion_request
+        action = request.data.get("action")   # "accept" | "reject"
+        deletion_req = notification.deletion_request
 
-            if not deletion_req:
-                return Response({"error": "No deletion request found"}, status=400)
+        if not deletion_req:
+            return Response({"error": "No deletion request found"}, status=400)
 
-            if deletion_req.status != "PENDING":
-                return Response({"detail": "Already handled"}, status=400)
+        if deletion_req.status != "PENDING":
+            return Response({"detail": "Already handled"}, status=400)
 
-            if action not in ("accept", "reject"):
-                return Response({"error": "Invalid action"}, status=400)
+        if action not in ("accept", "reject"):
+            return Response({"error": "Invalid action"}, status=400)
 
-            from documents.models import DocumentDeletionDecisionModel
-            from documents.views import notify_owner_of_decision
+        from documents.models import DocumentDeletionDecisionModel
+        from documents.views import notify_owner_of_decision
 
-            document = deletion_req.document
-            decision_value = "APPROVED" if action == "accept" else "REJECTED"
+        document = deletion_req.document
+        decision_value = "APPROVED" if action == "accept" else "REJECTED"
 
-            # Record this reviewer's vote
-            DocumentDeletionDecisionModel.objects.update_or_create(
-                document=document,
-                reviewer_id=request.user,
-                defaults={"decision": decision_value},
-            )
+        # Record this reviewer's vote
+        DocumentDeletionDecisionModel.objects.update_or_create(
+            document=document,
+            reviewer_id=request.user,
+            defaults={"decision": decision_value},
+        )
 
-            # Update the notification's verb so it reflects what the reviewer did
-            notification.verb = (
-                "You approved the deletion of"
-                if action == "accept"
-                else "You rejected the deletion of"
-            )
-            notification.is_read = True
-            notification.save()
+        # Update the notification's verb so it reflects what the reviewer did
+        notification.verb = (
+            "You approved the deletion of"
+            if action == "accept"
+            else "You rejected the deletion of"
+        )
+        notification.is_read = True
+        notification.save()
 
-            # --- Check consensus ---
-            reviewer_ids = set(
-                DocumentPermissionModel.objects.filter(
-                    document=document, permission_type="APPROVE"
-                ).values_list("user", flat=True)
-            )
+        # --- Check consensus ---
+        reviewer_ids = set(
+            DocumentPermissionModel.objects.filter(
+                document=document, permission_type="APPROVE"
+            ).values_list("user", flat=True)
+        )
 
-            decisions = DocumentDeletionDecisionModel.objects.filter(document=document)
-            approved_ids = set(decisions.filter(decision="APPROVED").values_list("reviewer_id", flat=True))
-            rejected_exists = decisions.filter(decision="REJECTED").exists()
+        decisions = DocumentDeletionDecisionModel.objects.filter(document=document)
+        approved_ids = set(decisions.filter(decision="APPROVED").values_list("reviewer_id", flat=True))
+        rejected_exists = decisions.filter(decision="REJECTED").exists()
 
-            if rejected_exists:
-                deletion_req.status = "REJECTED"
-                deletion_req.save()
-                notify_owner_of_decision(document, deletion_req, accepted=False)
-                return Response({"status": "REJECTED", "detail": "Deletion rejected."})
+        if rejected_exists:
+            deletion_req.status = "REJECTED"
+            deletion_req.save()
+            notify_owner_of_decision(document, deletion_req, accepted=False)
+            return Response({"status": "REJECTED", "detail": "Deletion rejected."})
 
-            if reviewer_ids and reviewer_ids == approved_ids:
-                deletion_req.status = "APPROVED"
-                deletion_req.save()
-                notify_owner_of_decision(document, deletion_req, accepted=True)
-                document.delete()
-                return Response({"status": "APPROVED", "detail": "Document deleted after unanimous approval."})
+        if reviewer_ids and reviewer_ids == approved_ids:
+            deletion_req.status = "APPROVED"
+            deletion_req.save()
+            notify_owner_of_decision(document, deletion_req, accepted=True)
+            document.delete()
+            return Response({"status": "APPROVED", "detail": "Document deleted after unanimous approval."})
 
-            return Response({"status": "PENDING", "detail": "Vote recorded, waiting for other reviewers."})
-        
-        except Exception as e :
-            traceback.print_exc()
-            print(e)
-            return Response({"error": "Notification not found"}, status=404)
+        return Response({"status": "PENDING", "detail": "Vote recorded, waiting for other reviewers."})
     

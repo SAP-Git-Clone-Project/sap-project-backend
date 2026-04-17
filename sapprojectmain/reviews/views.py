@@ -8,11 +8,13 @@ from django.db import transaction
 
 # Model/Serializer Imports
 from .models import ReviewModel, ReviewStatus
-from .serializers import ReviewSerializer
+from .serializers import ReviewSerializer, ReviewInboxSerializer
 from versions.models import VersionsModel, VersionStatus
 from document_permissions.models import DocumentPermissionModel
 from django.contrib.auth import get_user_model
 from core.permissions import IsAuthenticatedUser, IsReviewerForDocument
+from core.rbac import can_review_document, can_write_document, user_has_global_role
+from user_roles.models import Role
 
 from django.contrib.auth import get_user_model
 
@@ -22,18 +24,14 @@ class ReviewDetailView(APIView):
     permission_classes = [IsReviewerForDocument]
 
     def get(self, request, pk):
-        try:
-            # NOTE: GET review data including old and new versions for diffing
-            review = get_object_or_404(ReviewModel, pk=pk)
+        # NOTE: GET review data including old and new versions for diffing
+        review = get_object_or_404(ReviewModel, pk=pk)
 
-            # SECURITY: Verifies user has specific approval rights for this document
-            self.check_object_permissions(request, review)
+        # SECURITY: Verifies user has specific approval rights for this document
+        self.check_object_permissions(request, review)
 
-            serializer = ReviewSerializer(review)
-            return Response(serializer.data)
-        except Exception as e:
-            traceback.print_exc()
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        serializer = ReviewSerializer(review)
+        return Response(serializer.data)
 
     def patch(self, request, pk):
         # NOTE: PATCH to finalize the review decision as approved or rejected
@@ -66,72 +64,116 @@ class ReviewCreateView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def post(self, request):
-        try:
-            version_id = request.data.get("version")
-            reviewer_id = request.data.get("reviewer")
+        version_id = request.data.get("version")
+        reviewer_id = request.data.get("reviewer")
 
-            if not version_id:
-                return Response({"error": "'version' is required."}, status=status.HTTP_400_BAD_REQUEST)
-            if not reviewer_id:
-                return Response({"error": "'reviewer' is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not version_id:
+            return Response({"error": "'version' is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not reviewer_id:
+            return Response({"error": "'reviewer' is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-            reviewer = get_object_or_404(User, pk=reviewer_id)
+        reviewer = get_object_or_404(User, pk=reviewer_id)
 
-            with transaction.atomic():
-                version = get_object_or_404(VersionsModel, pk=version_id)
+        with transaction.atomic():
+            version = get_object_or_404(VersionsModel, pk=version_id)
 
-                # SECURITY: Only users with APPROVE permission on this document can be reviewers
-                has_approve_permission = DocumentPermissionModel.objects.filter(
-                    user=reviewer,
-                    document=version.document,
-                    permission_type="APPROVE"
-                ).exists()
-
-                if not has_approve_permission and not request.user.is_superuser:
-                    return Response(
-                        {"error": "This user is not an authorized reviewer for this document."},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
-
-                if ReviewModel.objects.filter(
-                    version=version,
-                    review_status=ReviewStatus.PENDING,
-                    reviewer=reviewer,
-                ).exists():
-                    return Response(
-                        {"error": "This reviewer already has a pending review for this version."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-
-                review = ReviewModel.objects.create(
-                    version=version,
-                    review_status=ReviewStatus.PENDING,
-                    reviewer=reviewer,
+            if not request.user.is_superuser and not can_write_document(
+                request.user, version.document
+            ):
+                return Response(
+                    {"error": "You do not have permission to assign reviewers."},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
-                version.status = VersionStatus.PENDING
-                version.save()
+            # SECURITY: Only users with APPROVE permission on this document can be reviewers
+            has_approve_permission = can_review_document(
+                reviewer, version.document, version=version
+            )
+            has_global_reviewer_role = user_has_global_role(
+                reviewer, Role.RoleName.REVIEWER
+            )
 
-            return Response(ReviewSerializer(review).data, status=status.HTTP_201_CREATED)
+            if (
+                not (has_approve_permission or has_global_reviewer_role)
+                and not request.user.is_superuser
+            ):
+                return Response(
+                    {"error": "This user is not an eligible reviewer for this document."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
-        except Exception as e:
-            traceback.print_exc()
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if ReviewModel.objects.filter(
+                version=version,
+                review_status=ReviewStatus.PENDING,
+                reviewer=reviewer,
+            ).exists():
+                return Response(
+                    {"error": "This reviewer already has a pending review for this version."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            review = ReviewModel.objects.create(
+                version=version,
+                review_status=ReviewStatus.PENDING,
+                reviewer=reviewer,
+            )
+
+            version.status = VersionStatus.PENDING
+            version.save()
+
+        return Response(ReviewSerializer(review).data, status=status.HTTP_201_CREATED)
 
 class ReviewListView(APIView):
     permission_classes = [IsReviewerForDocument]
 
     def get(self, request):
         user = request.user
+        version_id = request.query_params.get("version")
 
-        if user.is_staff or user.is_superuser:
-            reviews = ReviewModel.objects.all()
+        # PERF: reduce N+1 queries
+        base_qs = ReviewModel.objects.select_related(
+            "reviewer",
+            "version",
+            "version__created_by",
+            "version__document",
+            "version__document__created_by",
+            "version__parent_version",
+            "version__parent_version__created_by",
+            "version__parent_version__document",
+            "version__parent_version__document__created_by",
+        )
+
+        # Get version if provided (needed for owner check)
+        version_obj = None
+        if version_id:
+            version_obj = VersionsModel.objects.filter(id=version_id).first()
+
+        # Determine privileges
+        is_owner = (
+            version_obj
+            and version_obj.document.created_by_id == user.id
+        )
+
+        is_admin = user.is_staff or user.is_superuser
+
+        # Access control
+        if is_admin or is_owner:
+            reviews = base_qs.all()
         else:
-            reviews = ReviewModel.objects.filter(reviewer_id=user).select_related("version").distinct()
+            reviews = base_qs.filter(reviewer_id=user.id).distinct()
 
-        # NOTE: Default to pending only, pass ?all=true for full history/audit
+        # Optional version filter
+        if version_id:
+            reviews = reviews.filter(version_id=version_id)
+
+        # Default: only pending unless full history requested
         if request.query_params.get("all") != "true":
             reviews = reviews.filter(review_status=ReviewStatus.PENDING)
 
-        serializer = ReviewSerializer(reviews, many=True)
+        serializer = ReviewInboxSerializer(
+            reviews,
+            many=True,
+            context={"request": request},
+        )
+
         return Response(serializer.data)

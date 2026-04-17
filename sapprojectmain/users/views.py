@@ -4,6 +4,7 @@ from django.contrib.auth.hashers import check_password
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 # DRF
 from rest_framework import filters, generics, status
@@ -35,8 +36,11 @@ from document_permissions.models import DocumentPermissionModel
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUser
 
 import json
+import logging
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 # --- 1. AUTHENTICATION & IDENTITY ---
 
@@ -125,8 +129,19 @@ class UserSearchView(generics.ListAPIView):
     search_fields = ["username", "email"]
 
     def get_queryset(self):
-        # NOTE: Excludes the requesting user from search results
-        return UserModel.objects.exclude(id=self.request.user.id).filter(is_active=True)
+        queryset = UserModel.objects.exclude(id=self.request.user.id).filter(is_active=True)
+
+        role_name = self.request.query_params.get("role")
+        if role_name:
+            queryset = queryset.filter(user_roles__role__role_name=role_name)
+
+        document_id = self.request.query_params.get("document")
+        if document_id:
+            queryset = queryset.filter(
+                document_permissions__document_id=document_id
+            ).distinct()
+
+        return queryset.distinct()
 
 
 # --- 3. ADMIN & STAFF ACTIONS ---
@@ -226,59 +241,67 @@ class UserAdminToggleView(generics.GenericAPIView):
         )
 
 class AdminDeleteUserView(APIView):
-    permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]
+    permission_classes = [IsAuthenticated, IsStaffOrSuperUser]
 
     def delete(self, request, id):
+        # 1. Password Verification
         password = request.data.get("password")
-        if not password:
-            try:
-                password = json.loads(request.body).get("password")
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        if not password or not request.user.check_password(password):
+            return Response({"error": "Valid admin password required."}, status=401)
 
-        if not password:
-            return Response(
-                {"error": "Admin password is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not request.user.check_password(password):
-            return Response(
-                {"error": "Invalid credentials. Termination aborted."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        current_user = request.user
         user_to_delete = get_object_or_404(UserModel, pk=id)
 
-        if current_user == user_to_delete:
-            return Response(
-                {"error": "You cannot delete your own account from this panel."},
-                status=status.HTTP_403_FORBIDDEN,
+        # 2. Safety Checks
+        if request.user == user_to_delete:
+            return Response({"error": "Cannot delete yourself."}, status=403)
+
+        if user_to_delete.is_superuser and not request.user.is_superuser:
+            return Response({"error": "Insufficient privileges."}, status=403)
+
+        # 3. Token Blacklisting (outside atomic — failure here should NOT block deletion)
+        try:
+            tokens = OutstandingToken.objects.filter(user=user_to_delete)
+            if tokens.exists():
+                BlacklistedToken.objects.bulk_create(
+                    [BlacklistedToken(token=token) for token in tokens],
+                    ignore_conflicts=True,
+                )
+        except Exception as e:
+            # Non-fatal — user is being deleted anyway, tokens will be orphaned
+            logger.warning(f"Token blacklist step failed for user {id} (non-fatal): {e}", exc_info=True)
+
+        # 4. Core Deletion
+        try:
+            with transaction.atomic():
+                # Detach audit logs so they survive the user being gone
+                AuditLogModel.objects.filter(user=user_to_delete).update(user=None)
+                user_to_delete.delete()
+
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        except Exception as e:
+            # Log the REAL error with full traceback so you can see what's failing
+            logger.error(
+                f"AdminDeleteUserView: deletion failed for user {id} | "
+                f"Error type: {type(e).__name__} | Error: {e}",
+                exc_info=True,  # ← this prints the full stack trace to your logs
             )
 
-        if current_user.is_superuser:
-            if user_to_delete.is_superuser:
-                return Response(
-                    {"error": "Superusers cannot delete other superusers."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+            # Paradox check — did the deletion actually go through despite the exception?
+            try:
+                user_still_exists = UserModel.objects.filter(pk=id).exists()
+            except Exception as check_err:
+                logger.error(f"Existence check also failed: {check_err}", exc_info=True)
+                user_still_exists = False
 
-        elif current_user.is_staff:
-            if user_to_delete.is_superuser or user_to_delete.is_staff:
-                return Response(
-                    {"error": "Admins cannot delete other management accounts."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+            if not user_still_exists:
+                logger.warning(f"User {id} was deleted but a post-commit signal raised: {e}")
+                return Response(status=status.HTTP_204_NO_CONTENT)
 
-        tokens = OutstandingToken.objects.filter(user=user_to_delete)
-        BlacklistedToken.objects.bulk_create(
-            [BlacklistedToken(token=token) for token in tokens],
-            ignore_conflicts=True
-        )
-        user_to_delete.delete()
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                {"error": f"Deletion failed: {type(e).__name__} — check server logs."},
+                status=500,
+            )
 
 class ToggleUserView(APIView):
     permission_classes = [IsStaffOrSuperUser]
@@ -381,6 +404,7 @@ class UserDetailView(APIView):
 
         # DELETE RELATED TOKENS FIRST
         OutstandingToken.objects.filter(user=user).delete()
+        AuditLogModel.objects.filter(user=user).update(user=None)
 
         # 2. DELETE THE USER
         user.delete()
@@ -437,6 +461,7 @@ class CurrentUserDetailView(APIView):
 
         # 1. CLEAR TOKENS
         OutstandingToken.objects.filter(user=user).delete()
+        AuditLogModel.objects.filter(user=user).update(user=None)
 
         # 2. PERMANENT DELETE
         user.delete()
