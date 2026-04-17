@@ -1,3 +1,4 @@
+from django.db.models import Q
 from document_permissions.models import DocumentPermissionModel
 from user_roles.models import Role, UserRole
 
@@ -28,10 +29,17 @@ def get_document_permissions(user, document, version=None):
         return set()
 
     queryset = DocumentPermissionModel.objects.filter(user=user, document=document)
+
     if version is not None:
-        queryset = queryset.filter(version__in=[version, None])
+        version_perms = queryset.filter(version=version)
+
+        if version_perms.exists():
+            queryset = version_perms
+        else:
+            queryset = queryset.filter(version__isnull=True)
     else:
         queryset = queryset.filter(version__isnull=True)
+
     return set(queryset.values_list("permission_type", flat=True))
 
 

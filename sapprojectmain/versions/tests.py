@@ -108,10 +108,6 @@ class TestVersionLogic(VersionBaseTestCase):
         # 4. Use 'multipart' format for file uploads
         response = self.client.post(self.list_url, payload, format='multipart')
 
-        # Debugging tip: If it still fails, print response.data to see exactly why
-        if response.status_code != status.HTTP_201_CREATED:
-            print(f"DEBUG: {response.data}")
-
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         
         v2 = VersionsModel.objects.get(version_number=2)

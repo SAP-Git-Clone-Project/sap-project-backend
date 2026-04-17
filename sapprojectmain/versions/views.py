@@ -379,8 +379,6 @@ class DocumentVersionHandler(APIView):
             messages = getattr(e, "messages", None)
             msg = messages[0] if messages else str(e)
             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as ve:
-            print(ve)
 
 
 class VersionDetailView(APIView):
@@ -493,7 +491,8 @@ class VersionDiffView(APIView):
             )
 
         current_filename = version.file_path.split('/')[-1] if version.file_path else "current.txt"
-        
+        new_size = len(current_file_text.encode("utf-8"))
+
         if not base_version:
             return Response({
                 "can_compare": True,
@@ -501,6 +500,8 @@ class VersionDiffView(APIView):
                 "new_v": version.version_number,
                 "new_filename": current_filename,
                 "new_content": current_file_text, 
+                "old_size": 0,
+                "new_size": new_size,
                 "diff": []
             })
 
@@ -536,7 +537,6 @@ class VersionDiffView(APIView):
                     diff_output.append({"type": "insert", "value": line})
 
         old_size = len(parent_file_text.encode("utf-8"))
-        new_size = len(current_file_text.encode("utf-8"))
         return Response(
             {
                 "can_compare": True,

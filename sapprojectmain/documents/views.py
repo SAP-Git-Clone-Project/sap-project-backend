@@ -359,8 +359,6 @@ class DocumentListGetAllView(APIView):
             for d in doc_list:
                 d._latest_version = latest_by_doc_id.get(d.id)
 
-        print(doc_list)
-
         serializer = DocumentSerializer(
             doc_list, many=True, context={"request": request, "stats_mode": True}
         )
@@ -525,19 +523,14 @@ class DocumentRequestDeleteView(APIView):
     permission_classes = [IsAuthenticatedUser]
 
     def post(self, request, id):
-        try:
-            document = self.get_object(id)
-            if not document:
-                return Response(
-                    {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
-                )
+        document = self.get_object(id)
+        if not document:
+            return Response(
+                {"detail": "Document not found"}, status=status.HTTP_404_NOT_FOUND
+            )
 
-            return initiate_deletion_with_notifications(request, document)
-
-        except Exception as e:
-            traceback.print_exc()
-            return Response({"detail": "Internal server error"}, status=500)
-
+        return initiate_deletion_with_notifications(request, document)
+        
     def get_object(self, id):
         try:
             if self.request.user.is_superuser:

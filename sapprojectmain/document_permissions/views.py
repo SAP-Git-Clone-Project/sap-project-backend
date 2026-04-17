@@ -254,9 +254,6 @@ class CreatePermissionRequestView(APIView):
     permission_classes = [IsAuthenticatedUser, HasDocumentDeletePermission]
 
     def post(self, request):
-        print("CreatePermissionRequestView HIT")
-        print(request.data)
-
         user_id = request.data.get("user")
         document_id = request.data.get("document")
         version_id = request.data.get("version")
