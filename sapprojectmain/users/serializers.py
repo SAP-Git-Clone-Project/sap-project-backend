@@ -8,7 +8,8 @@ import re
 from .models import UserModel
 from user_roles.models import Role, UserRole
 from core.rbac import get_global_roles
-from .models import UserModel , UserRoleModel, RoleChoices
+from .models import UserModel
+from user_roles.models import UserRole, Role
 
 # VALIDATORS
 # NOTE: Regex to ensure usernames are URL-safe and start with a letter

@@ -6,7 +6,6 @@ from django.contrib.auth.models import (
     BaseUserManager,
 )
 from django.conf import settings
-from .models import RoleChoices
 
 
 class UserManager(BaseUserManager):
