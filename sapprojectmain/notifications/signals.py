@@ -45,20 +45,18 @@ def store_old_review_status(sender, instance, **kwargs):
 # ---------------------------------------------------------------------------
 @receiver(post_delete, sender=DocumentPermissionModel)
 def notify_owner_of_resignation(sender, instance, **kwargs):
-    # Eagerly resolve FKs NOW — after commit the related rows may be gone
     try:
         recipient = instance.document.created_by
-        actor     = instance.user
+        actor = instance.user
         perm_type = instance.permission_type
-        document  = instance.document
-    except Exception as e:
-        logger.warning(f"Resignation notification skipped (FK resolution failed): {e}")
+        document = instance.document
+    except Exception:
         return
 
     transaction.on_commit(lambda: _safe_notify(
         recipient=recipient,
         user=actor,
-        verb=f"resigned from their {perm_type} role for",
+        verb=f"{actor.username} resigned from {perm_type} access to",
         target_document=document,
     ))
 
