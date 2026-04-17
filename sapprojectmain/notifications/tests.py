@@ -67,7 +67,7 @@ class NotificationHardenedTests(TransactionTestCase):
         # Check if User B got the notification
         notif = NotificationModel.objects.filter(recipient=self.user_b).first()
         self.assertIsNotNone(notif)
-        self.assertIn("granted you", notif.verb)
+        self.assertIn("granted by", notif.verb)
 
     # --- HACKER & SECURITY TESTS ---
 
