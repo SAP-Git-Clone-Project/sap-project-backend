@@ -4,6 +4,7 @@ from django.contrib.auth.hashers import check_password
 from django.contrib.auth.signals import user_logged_in, user_logged_out
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 # DRF
 from rest_framework import filters, generics, status
@@ -35,8 +36,11 @@ from document_permissions.models import DocumentPermissionModel
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUser
 
 import json
+import logging
 
 User = get_user_model()
+
+logger = logging.getLogger(__name__)
 
 # --- 1. AUTHENTICATION & IDENTITY ---
 
@@ -247,38 +251,57 @@ class AdminDeleteUserView(APIView):
 
         user_to_delete = get_object_or_404(UserModel, pk=id)
 
-        # 2. Safety Check (Can't delete self or higher ranks)
+        # 2. Safety Checks
         if request.user == user_to_delete:
             return Response({"error": "Cannot delete yourself."}, status=403)
 
+        if user_to_delete.is_superuser and not request.user.is_superuser:
+            return Response({"error": "Insufficient privileges."}, status=403)
+
+        # 3. Token Blacklisting (outside atomic — failure here should NOT block deletion)
+        try:
+            tokens = OutstandingToken.objects.filter(user=user_to_delete)
+            if tokens.exists():
+                BlacklistedToken.objects.bulk_create(
+                    [BlacklistedToken(token=token) for token in tokens],
+                    ignore_conflicts=True,
+                )
+        except Exception as e:
+            # Non-fatal — user is being deleted anyway, tokens will be orphaned
+            logger.warning(f"Token blacklist step failed for user {id} (non-fatal): {e}", exc_info=True)
+
+        # 4. Core Deletion
         try:
             with transaction.atomic():
-                # A. Blacklist tokens so the user is kicked out immediately
-                tokens = OutstandingToken.objects.filter(user=user_to_delete)
-                if tokens.exists():
-                    BlacklistedToken.objects.bulk_create(
-                        [BlacklistedToken(token=token) for token in tokens],
-                        ignore_conflicts=True
-                    )
-
-                # B. Detach Audit Logs BEFORE deletion 
-                # This ensures logs stay in the DB but aren't linked to a deleted ID
+                # Detach audit logs so they survive the user being gone
                 AuditLogModel.objects.filter(user=user_to_delete).update(user=None)
-
-                # C. Final Deletion
                 user_to_delete.delete()
 
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         except Exception as e:
-            # Check if user is already gone (paradox check)
-            if not UserModel.objects.filter(pk=id).exists():
-                logger.warning(f"Cleanup signal error, but user {id} was deleted: {e}")
+            # Log the REAL error with full traceback so you can see what's failing
+            logger.error(
+                f"AdminDeleteUserView: deletion failed for user {id} | "
+                f"Error type: {type(e).__name__} | Error: {e}",
+                exc_info=True,  # ← this prints the full stack trace to your logs
+            )
+
+            # Paradox check — did the deletion actually go through despite the exception?
+            try:
+                user_still_exists = UserModel.objects.filter(pk=id).exists()
+            except Exception as check_err:
+                logger.error(f"Existence check also failed: {check_err}", exc_info=True)
+                user_still_exists = False
+
+            if not user_still_exists:
+                logger.warning(f"User {id} was deleted but a post-commit signal raised: {e}")
                 return Response(status=status.HTTP_204_NO_CONTENT)
-            
-            logger.error(f"Delete failed: {e}")
-            return Response({"error": "System error during deletion."}, status=500)
-             
+
+            return Response(
+                {"error": f"Deletion failed: {type(e).__name__} — check server logs."},
+                status=500,
+            )
 
 class ToggleUserView(APIView):
     permission_classes = [IsStaffOrSuperUser]
