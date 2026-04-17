@@ -237,60 +237,48 @@ class UserAdminToggleView(generics.GenericAPIView):
         )
 
 class AdminDeleteUserView(APIView):
-    permission_classes = [IsAuthenticatedUser, IsStaffOrSuperUser]
+    permission_classes = [IsAuthenticated, IsStaffOrSuperUser]
 
     def delete(self, request, id):
+        # 1. Password Verification
         password = request.data.get("password")
-        if not password:
-            try:
-                password = json.loads(request.body).get("password")
-            except (json.JSONDecodeError, AttributeError):
-                pass
+        if not password or not request.user.check_password(password):
+            return Response({"error": "Valid admin password required."}, status=401)
 
-        if not password:
-            return Response(
-                {"error": "Admin password is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not request.user.check_password(password):
-            return Response(
-                {"error": "Invalid credentials. Termination aborted."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        current_user = request.user
         user_to_delete = get_object_or_404(UserModel, pk=id)
 
-        if current_user == user_to_delete:
-            return Response(
-                {"error": "You cannot delete your own account from this panel."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # 2. Safety Check (Can't delete self or higher ranks)
+        if request.user == user_to_delete:
+            return Response({"error": "Cannot delete yourself."}, status=403)
 
-        if current_user.is_superuser:
-            if user_to_delete.is_superuser:
-                return Response(
-                    {"error": "Superusers cannot delete other superusers."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+        try:
+            with transaction.atomic():
+                # A. Blacklist tokens so the user is kicked out immediately
+                tokens = OutstandingToken.objects.filter(user=user_to_delete)
+                if tokens.exists():
+                    BlacklistedToken.objects.bulk_create(
+                        [BlacklistedToken(token=token) for token in tokens],
+                        ignore_conflicts=True
+                    )
 
-        elif current_user.is_staff:
-            if user_to_delete.is_superuser or user_to_delete.is_staff:
-                return Response(
-                    {"error": "Admins cannot delete other management accounts."},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                # B. Detach Audit Logs BEFORE deletion 
+                # This ensures logs stay in the DB but aren't linked to a deleted ID
+                AuditLogModel.objects.filter(user=user_to_delete).update(user=None)
 
-        tokens = OutstandingToken.objects.filter(user=user_to_delete)
-        BlacklistedToken.objects.bulk_create(
-            [BlacklistedToken(token=token) for token in tokens],
-            ignore_conflicts=True
-        )
-        AuditLogModel.objects.filter(user=user_to_delete).update(user=None)
-        user_to_delete.delete()
+                # C. Final Deletion
+                user_to_delete.delete()
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        except Exception as e:
+            # Check if user is already gone (paradox check)
+            if not UserModel.objects.filter(pk=id).exists():
+                logger.warning(f"Cleanup signal error, but user {id} was deleted: {e}")
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            
+            logger.error(f"Delete failed: {e}")
+            return Response({"error": "System error during deletion."}, status=500)
+             
 
 class ToggleUserView(APIView):
     permission_classes = [IsStaffOrSuperUser]

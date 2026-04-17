@@ -7,8 +7,6 @@ from document_permissions.models import DocumentPermissionModel
 from reviews.models import ReviewModel
 from versions.models import VersionsModel
 from .models import NotificationModel
-from user_roles.models import UserRole
-
 logger = logging.getLogger(__name__)
 
 
