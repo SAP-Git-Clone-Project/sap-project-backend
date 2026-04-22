@@ -1,3 +1,4 @@
+import logging
 import uuid
 import hashlib
 import difflib
@@ -7,6 +8,7 @@ import zipfile
 from urllib.parse import urlparse
 import httpx
 import requests
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -19,6 +21,12 @@ from reportlab.lib.pagesizes import letter
 from django.utils import timezone
 from django.utils.text import slugify
 
+import cloudinary.utils
+import time
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import puremagic as magic
 from django.core.exceptions import ValidationError
 
@@ -26,13 +34,6 @@ from .models import VersionsModel, VersionStatus
 from reviews.models import ReviewModel, ReviewStatus
 from documents.models import DocumentModel
 from .serializers import VersionSerializer
-import traceback
-
-import cloudinary.utils
-import time
-import re
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from core.permissions import (
     HasDocumentReadPermission,
@@ -45,6 +46,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 def get_signed_url(file_path: str) -> str:
     if not file_path:
@@ -443,7 +445,7 @@ class VersionDiffView(APIView):
                     return r.text
                 return None
         except Exception as e:
-            print(f"Cloudinary Fetch Error: {str(e)}")
+            logger.exception(f"Cloudinary Fetch Error: %s", str(e))
             return None
 
     def get(self, request, pk):

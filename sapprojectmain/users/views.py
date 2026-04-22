@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Django
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.hashers import check_password
@@ -35,12 +39,7 @@ from document_permissions.models import DocumentPermissionModel
 # NOTE: Custom permission classes for access control
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUser
 
-import json
-import logging
-
 User = get_user_model()
-
-logger = logging.getLogger(__name__)
 
 # --- 1. AUTHENTICATION & IDENTITY ---
 
@@ -114,7 +113,7 @@ class LogoutView(APIView):
             return Response({"detail": "Logged out."}, status=200)
 
         except Exception as e:
-            print("ERROR:", str(e))
+            logger.exception("ERROR: ", str(e))
             return Response({"detail": "Invalid token."}, status=400)
 
 
