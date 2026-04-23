@@ -12,7 +12,7 @@ import traceback
 
 
 # ---------------------------------------------------------------------------
-# 1. Custom Pagination with unread counts
+# Custom Pagination with unread counts
 # ---------------------------------------------------------------------------
 
 class NotificationPagination(PageNumberPagination):
@@ -37,7 +37,7 @@ class NotificationPagination(PageNumberPagination):
 
 
 # ---------------------------------------------------------------------------
-# 2. Optimized List View
+# Optimized List View
 # ---------------------------------------------------------------------------
 
 class NotificationListView(generics.ListAPIView):
@@ -70,7 +70,7 @@ class NotificationListView(generics.ListAPIView):
 
 
 # ---------------------------------------------------------------------------
-# 3. Mark specific notification as read
+# Mark specific notification as read
 # ---------------------------------------------------------------------------
 
 class MarkNotificationReadView(generics.UpdateAPIView):
@@ -89,7 +89,7 @@ class MarkNotificationReadView(generics.UpdateAPIView):
 
 
 # ---------------------------------------------------------------------------
-# 4. Mark all as read
+# Mark all as read
 # ---------------------------------------------------------------------------
 
 class MarkAllReadView(APIView):
@@ -104,7 +104,7 @@ class MarkAllReadView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# 5. Delete notification
+# Delete notification
 # ---------------------------------------------------------------------------
 
 class NotificationDeleteView(generics.DestroyAPIView):
@@ -116,7 +116,7 @@ class NotificationDeleteView(generics.DestroyAPIView):
 
 
 # ---------------------------------------------------------------------------
-# 6. Handle permission/invitation requests  (unchanged)
+# Handle permission/invitation requests  (unchanged)
 # ---------------------------------------------------------------------------
 
 class HandleJoinRequestView(APIView):
@@ -164,7 +164,7 @@ class HandleJoinRequestView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# 7. Handle document deletion approval requests  (NEW — mirrors HandleJoinRequestView)
+# Handle document deletion approval requests  (NEW — mirrors HandleJoinRequestView)
 # ---------------------------------------------------------------------------
 
 class HandleDeletionRequestView(APIView):

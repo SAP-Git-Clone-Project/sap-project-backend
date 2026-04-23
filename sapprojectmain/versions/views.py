@@ -262,7 +262,7 @@ class DocumentVersionHandler(APIView):
         # Now get_object_or_404 will succeed for Readers
         doc = get_object_or_404(docs, id=id)
 
-        # 1. Fetch versions for this document
+        # Fetch versions for this document
         versions = (
             VersionsModel.objects.filter(document=doc)
             .select_related(
@@ -274,7 +274,7 @@ class DocumentVersionHandler(APIView):
             .order_by("-version_number")
         )
 
-        # 2. Determine if user has "Management" rights
+        # Determine if user has "Management" rights
         is_owner = (
             request.user.is_superuser or 
             doc.created_by == request.user or 
@@ -284,7 +284,7 @@ class DocumentVersionHandler(APIView):
             ).exists()
         )
 
-        # 3. Filter version visibility based on role
+        # Filter version visibility based on role
         if not is_owner:
             # Readers should only see active or approved versions, 
             # usually excluding rejected or draft versions.
@@ -449,7 +449,7 @@ class VersionDiffView(APIView):
             return None
 
     def get(self, request, pk):
-        # 1. Authorization
+        # Authorization
         version = get_authorized_version(request.user, pk)
         is_owner = version.document.created_by_id == request.user.id
         
@@ -465,7 +465,7 @@ class VersionDiffView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # 2. Setup Base Version
+        # Setup Base Version
         compare_to = request.query_params.get("compare_to")
         base_version = version.parent_version
         
@@ -482,7 +482,7 @@ class VersionDiffView(APIView):
             if not request.user.is_superuser:
                 get_authorized_version(request.user, base_version.id)
 
-        # 3. Fetch New Content from Cloudinary
+        # Fetch New Content from Cloudinary
         current_signed_url = get_signed_url(version.file_path)
         current_file_text = self.fetch_file_text(current_signed_url)
         
@@ -507,7 +507,7 @@ class VersionDiffView(APIView):
                 "diff": []
             })
 
-        # 4. Fetch Old Content from Cloudinary
+        # Fetch Old Content from Cloudinary
         base_signed_url = get_signed_url(base_version.file_path)
         parent_file_text = self.fetch_file_text(base_signed_url)
         
@@ -519,7 +519,7 @@ class VersionDiffView(APIView):
 
         base_filename = base_version.file_path.split('/')[-1] if base_version.file_path else "previous.txt"
 
-        # 5. Diffing Logic
+        # Diffing Logic
         # Clean lines to ensure \r\n doesn't mess up the comparison
         old_lines = parent_file_text.splitlines()
         new_lines = current_file_text.splitlines()

@@ -69,7 +69,7 @@ class AuditLogHardenedTests(TestCase):
         self.url = reverse("auditlog-list")
 
     # -------------------------------------------------------------------------
-    # 1. Immutability — the API must be strictly read-only
+    # Immutability — the API must be strictly read-only
     # -------------------------------------------------------------------------
 
     def test_api_is_strictly_read_only(self):
@@ -97,7 +97,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     # -------------------------------------------------------------------------
-    # 2. UUID crash guard — bad query params must never cause a 500
+    # UUID crash guard — bad query params must never cause a 500
     # -------------------------------------------------------------------------
 
     def test_malformed_uuid_params_do_not_500(self):
@@ -114,7 +114,7 @@ class AuditLogHardenedTests(TestCase):
             )
 
     # -------------------------------------------------------------------------
-    # 3. Ghost log — audit rows must survive user deletion
+    # Ghost log — audit rows must survive user deletion
     # -------------------------------------------------------------------------
 
     def test_logs_persist_after_user_deletion(self):
@@ -131,7 +131,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertIsNone(log.user)
 
     # -------------------------------------------------------------------------
-    # 4. IP spoof guard — get_current_ip result is stored, not X-Forwarded-For
+    # IP spoof guard — get_current_ip result is stored, not X-Forwarded-For
     # -------------------------------------------------------------------------
 
     @patch(FAKE_IP_PATCH, return_value="127.0.0.1")
@@ -145,7 +145,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertEqual(log.ip_address, "127.0.0.1")
 
     # -------------------------------------------------------------------------
-    # 5. Filtering — action_type / user_id / document_id params narrow results
+    # Filtering — action_type / user_id / document_id params narrow results
     # -------------------------------------------------------------------------
 
     def test_filter_by_action_type(self):
@@ -192,16 +192,6 @@ class AuditLogHardenedTests(TestCase):
         self.assertEqual(user_ids, {str(self.regular.id)})
 
     def test_filter_by_document_id(self):
-        """
-        ?document_id=<uuid> must return only logs tied to that document.
-
-        Note: the view's get_queryset() does not currently implement a
-        document_id filter. This test will FAIL until that filter is added:
-
-            document_id = self.request.query_params.get("document_id")
-            if document_id:
-                queryset = queryset.filter(document_id=document_id)
-        """
         doc = make_document("Sensitive Doc", self.regular)
         AuditLogModel.objects.create(document=doc, action_type="DOC_VIEW")
         AuditLogModel.objects.create(action_type="LOGIN", user=self.regular)
@@ -215,7 +205,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertEqual(data[0]["action_type"], "DOC_VIEW")
 
     # -------------------------------------------------------------------------
-    # 6. Access control
+    # Access control
     # -------------------------------------------------------------------------
 
     def test_unauthenticated_request_is_rejected(self):
@@ -253,7 +243,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     # -------------------------------------------------------------------------
-    # 7. Pagination
+    # Pagination
     # -------------------------------------------------------------------------
 
     def test_response_is_paginated(self):
@@ -265,7 +255,7 @@ class AuditLogHardenedTests(TestCase):
         self.assertIn("count", response.data)
 
     # -------------------------------------------------------------------------
-    # 8. Ordering — newest records come first
+    # Ordering — newest records come first
     # -------------------------------------------------------------------------
 
     def test_results_are_ordered_newest_first(self):

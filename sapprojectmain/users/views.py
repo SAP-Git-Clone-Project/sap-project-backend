@@ -41,7 +41,7 @@ from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser, IsSuperUse
 
 User = get_user_model()
 
-# --- 1. AUTHENTICATION & IDENTITY ---
+# --- AUTHENTICATION & IDENTITY ---
 
 
 class RegisterView(APIView):
@@ -117,7 +117,7 @@ class LogoutView(APIView):
             return Response({"detail": "Invalid token."}, status=400)
 
 
-# --- 2. USER DISCOVERY ---
+# --- USER DISCOVERY ---
 
 
 class UserSearchView(generics.ListAPIView):
@@ -143,7 +143,7 @@ class UserSearchView(generics.ListAPIView):
         return queryset.distinct()
 
 
-# --- 3. ADMIN & STAFF ACTIONS ---
+# --- ADMIN & STAFF ACTIONS ---
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -201,7 +201,7 @@ class UserAdminToggleView(generics.GenericAPIView):
         requester = request.user
         password = request.data.get("password")
 
-        # 1. Password Verification (Using check_password like your delete view)
+        # Password Verification (Using check_password like your delete view)
         if not password:
             return Response(
                 {"detail": "Password is required to change admin status."},
@@ -214,14 +214,14 @@ class UserAdminToggleView(generics.GenericAPIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # 2. Safety Check
+        # Safety Check
         if user_to_toggle == requester:
             return Response(
                 {"detail": "You cannot change your own admin status through this endpoint."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 3. Toggle Logic
+        # Toggle Logic
         requested_status = request.data.get("is_staff")
         if requested_status is not None:
             user_to_toggle.is_staff = str(requested_status).lower() == "true"
@@ -243,21 +243,21 @@ class AdminDeleteUserView(APIView):
     permission_classes = [IsAuthenticated, IsStaffOrSuperUser]
 
     def delete(self, request, id):
-        # 1. Password Verification
+        # Password Verification
         password = request.data.get("password")
         if not password or not request.user.check_password(password):
             return Response({"error": "Valid admin password required."}, status=401)
 
         user_to_delete = get_object_or_404(UserModel, pk=id)
 
-        # 2. Safety Checks
+        # Safety Checks
         if request.user == user_to_delete:
             return Response({"error": "Cannot delete yourself."}, status=403)
 
         if user_to_delete.is_superuser and not request.user.is_superuser:
             return Response({"error": "Insufficient privileges."}, status=403)
 
-        # 3. Token Blacklisting (outside atomic — failure here should NOT block deletion)
+        # Token Blacklisting (outside atomic — failure here should NOT block deletion)
         try:
             tokens = OutstandingToken.objects.filter(user=user_to_delete)
             if tokens.exists():
@@ -269,7 +269,7 @@ class AdminDeleteUserView(APIView):
             # Non-fatal — user is being deleted anyway, tokens will be orphaned
             logger.warning(f"Token blacklist step failed for user {id} (non-fatal): {e}", exc_info=True)
 
-        # 4. Core Deletion
+        # Core Deletion
         try:
             with transaction.atomic():
                 # Detach audit logs so they survive the user being gone
@@ -318,7 +318,7 @@ class ToggleUserView(APIView):
             )
 
         # HIERARCHY LOGIC:
-        # 1. Superuser logic: Can toggle anyone EXCEPT other Superusers
+        # Superuser logic: Can toggle anyone EXCEPT other Superusers
         if current_user.is_superuser:
             if user.is_superuser:
                 return Response(
@@ -326,7 +326,7 @@ class ToggleUserView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # 2. Staff (Admin) logic: Cannot toggle Superusers OR other Staff members
+        # Staff (Admin) logic: Cannot toggle Superusers OR other Staff members
         elif current_user.is_staff:
             if user.is_superuser or user.is_staff:
                 return Response(
@@ -340,7 +340,7 @@ class ToggleUserView(APIView):
         return Response({"is_active": user.is_active})
 
 
-# --- 4. TARGETED MEMBER ACTIONS ---
+# --- TARGETED MEMBER ACTIONS ---
 
 
 class UserDetailView(APIView):
@@ -405,13 +405,13 @@ class UserDetailView(APIView):
         OutstandingToken.objects.filter(user=user).delete()
         AuditLogModel.objects.filter(user=user).update(user=None)
 
-        # 2. DELETE THE USER
+        # DELETE THE USER
         user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# --- 5. THE 'ME' ENDPOINT ---
+# --- THE 'ME' ENDPOINT ---
 
 
 class CurrentUserDetailView(APIView):
@@ -458,11 +458,11 @@ class CurrentUserDetailView(APIView):
 
         user = request.user
 
-        # 1. CLEAR TOKENS
+        # CLEAR TOKENS
         OutstandingToken.objects.filter(user=user).delete()
         AuditLogModel.objects.filter(user=user).update(user=None)
 
-        # 2. PERMANENT DELETE
+        # PERMANENT DELETE
         user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)

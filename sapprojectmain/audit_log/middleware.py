@@ -39,9 +39,9 @@ def get_current_ip(request=None):
     - Signals (no request)
     """
 
-    # 1. If request exists (views / APIs)
+    # If request exists (views / APIs)
     if request is not None:
         return getattr(request, "client_ip", None) or "system"
 
-    # 2. If no request (signals)
+    # If no request (signals)
     return getattr(_thread_locals, "request_ip", None) or "system"
