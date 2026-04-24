@@ -62,5 +62,3 @@ class UserModel(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         # NOTE: Returns email for user identification in admin and logs
         return self.user.email
-
-    

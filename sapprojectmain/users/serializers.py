@@ -120,7 +120,7 @@ class UserSerializer(serializers.ModelSerializer):
             "created_at",
             "global_roles",
         ]
-        # SECURITY: Prevents self-escalation of privileges via profile updates
+        # NOTE: Prevents self-escalation of privileges via profile updates
         read_only_fields = [
             "id",
             "is_staff",
@@ -176,9 +176,11 @@ class UserSearchSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "username", "email"]
 
+    # NOTE: Retrive global roles for the user to determine eligibility for role assignments in the frontend
     def get_global_roles(self, obj):
         return sorted(get_global_roles(obj))
 
+    # NOTE: Determines if user can be assigned the "Reviewer" role based on current global roles
     def get_eligible_for_reviewer(self, obj):
         return Role.RoleName.REVIEWER in get_global_roles(obj)
         fields = ["id", "username", "email", "first_name", "last_name", "avatar"]

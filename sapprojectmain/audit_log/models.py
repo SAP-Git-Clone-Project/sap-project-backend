@@ -8,7 +8,7 @@ from versions.models import VersionsModel
 class AuditLogModel(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    # SECURITY: SET_NULL ensures audit trails persist even if the actor is deleted
+    # NOTE: SET_NULL ensures audit trails persist even if the actor is deleted
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -35,10 +35,10 @@ class AuditLogModel(models.Model):
         db_column="version_id",
     )
 
-    # IMP: action_type stored as string for compatibility across different DB backends
+    # NOTE: action_type stored as string for compatibility across different DB backends
     action_type = models.CharField(max_length=50)
 
-    # SECURITY: Capturing origin IP for compliance and security monitoring
+    # NOTE: Capturing origin IP for compliance and security monitoring
     ip_address = models.CharField(max_length=45, null=True, blank=True)
 
     # NOTE: timestamp captures the exact moment of the logged event
@@ -48,12 +48,12 @@ class AuditLogModel(models.Model):
     description = models.TextField(null=True, blank=True)
 
     class Meta:
-        # IMP: Explicit table name mapping to the 'audit_log' database table
+        # NOTE: Explicit table name mapping to the 'audit_log' database table
         db_table = "audit_log"
+
+        # NOTE: Orders logs by most recent first
         ordering = ["-timestamp"]
 
+    # NOTE: String representation of the audit log entry for easy identification in admin interfaces and debugging in the django admin panel
     def __str__(self):
         return f"{self.action_type} - {self.timestamp}"
-
-# IMP: Verify that DocumentModel and VersionsModel are correctly migrated before this model
-# SECURITY: Ensure this table has restricted write access to system processes only

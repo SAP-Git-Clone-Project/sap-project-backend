@@ -48,6 +48,7 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
+# NOTE: This function generates a signed URL for a Cloudinary resource, allowing temporary access to private files.
 def get_signed_url(file_path: str) -> str:
     if not file_path:
         return ""
@@ -71,6 +72,7 @@ def get_signed_url(file_path: str) -> str:
     return signed_url
 
 
+# NOTE: This generates a hash checksum for the uploaded file to detect changes
 def generate_checksum(file):
     sha256_hash = hashlib.sha256()
     file.seek(0)
@@ -80,6 +82,7 @@ def generate_checksum(file):
     return sha256_hash.hexdigest()
 
 
+# NOTE: This function is permission gate for accessing a version
 def get_authorized_version(user, pk):
     if user.is_superuser:
         return get_object_or_404(VersionsModel, pk=pk)
@@ -92,17 +95,17 @@ def get_authorized_version(user, pk):
             Q(document__created_by=user) |              # Owner of the doc
             Q(document__document_permissions__user=user) | # Invited to the doc
             Q(created_by=user) |                        # Creator of this version
-            Q(is_active=True),                          # <--- PUBLIC ACCESS DOOR
+            Q(is_active=True),                          # PUBLIC ACCESS DOOR
             document__is_deleted=False,
         ).distinct(),
         pk=pk,
     )
 
 
-# Uploads: extension must match detected content (magic bytes), not just one OR the other.
+# Extension must match detected content (magic bytes), not just one OR the other.
 ALLOWED_EXTENSIONS = frozenset({"pdf", "doc", "docx", "txt"})
 
-# Declared extension -> MIME types that are acceptable for that extension (normalized, no params).
+# Declared extension - MIME types that are acceptable for that extension (normalized, no params).
 EXTENSION_EXPECTED_MIMES = {
     "pdf": frozenset({"application/pdf"}),
     "doc": frozenset({"application/msword"}),
@@ -112,7 +115,7 @@ EXTENSION_EXPECTED_MIMES = {
     "txt": frozenset({"text/plain", "text/markdown"}),
 }
 
-# Never treat as documents/images regardless of filename.
+# NOTE: Blocked MIME types
 BLOCKLISTED_MIMES = frozenset(
     {
         "text/html",
@@ -126,12 +129,14 @@ BLOCKLISTED_MIMES = frozenset(
 )
 
 
+# NOTE: Normalize the MIME type
 def _normalize_mime(mime: str) -> str:
     if not mime:
         return ""
     return mime.split(";", 1)[0].strip().lower()
 
 
+# NOTE: Fallback MIME sniffing for allowed types when magic returns octet-stream or fails, using signature bytes
 def _sniff_mime_from_bytes(chunk: bytes) -> str | None:
     """Fallback when magic returns octet-stream; signatures for allowed types only."""
     if not chunk:
@@ -155,6 +160,7 @@ def _sniff_mime_from_bytes(chunk: bytes) -> str | None:
     return None
 
 
+# NOTE: Heuristic to check if a byte chunk looks like plain text, used for validating .txt files that magic might misidentify as octet-stream
 def _looks_like_plain_text(chunk: bytes) -> bool:
     if not chunk:
         return True
@@ -174,6 +180,7 @@ def _looks_like_plain_text(chunk: bytes) -> bool:
     return printable / max(len(s), 1) > 0.95
 
 
+# NOTE: Manages document versions — it lets users upload new versions, list existing versions, and enforces strict security, file validation, and access control.
 class DocumentVersionHandler(APIView):
     def get_permissions(self):
         if self.request.method == "GET":
@@ -256,7 +263,7 @@ class DocumentVersionHandler(APIView):
             ).filter(
                 Q(created_by=request.user) | 
                 Q(document_permissions__user=request.user) |
-                Q(is_public=True)  # <-- This allows Readers to find the doc
+                Q(is_public=True)  
             ).distinct()
 
         # Now get_object_or_404 will succeed for Readers
@@ -289,8 +296,6 @@ class DocumentVersionHandler(APIView):
             # Readers should only see active or approved versions, 
             # usually excluding rejected or draft versions.
             versions = versions.exclude(status=VersionStatus.REJECTED)
-            # Optional: You might also want to filter for only active/approved:
-            # versions = versions.filter(Q(is_active=True) | Q(status=VersionStatus.APPROVED))
 
         serializer = VersionSerializer(versions, many=True, context={"request": request})
         return Response(serializer.data)

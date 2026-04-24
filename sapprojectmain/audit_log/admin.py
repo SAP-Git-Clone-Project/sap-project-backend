@@ -3,9 +3,13 @@ from .models import AuditLogModel
 
 
 # ADMIN INTERFACE FOR SYSTEM LOGGING
+
+# NOTE: Register function makes the AuditLogModel available in the Django admin interface
 @admin.register(AuditLogModel)
+
+# NOTE: AuditLogAdmin defines the admin interface for the AuditLogModel, making it read-only and preventing modifications
 class AuditLogAdmin(admin.ModelAdmin):
-    # NOTE: Summary view columns for high-level audit tracking
+    # NOTE: The list_display specifies which field to show in the admin list view
     list_display = ("timestamp", "user", "action_type", "document")
 
     # SECURITY: Dynamically setting all model fields to read-only to prevent tampering
@@ -19,10 +23,7 @@ class AuditLogAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         return False
 
-    # IMP: Disable deletion to maintain a complete and permanent audit trail
+    # SECURITY: Disable deletion to maintain a complete and permanent audit trail
     def has_delete_permission(self, request, obj=None):
         return False
 
-
-# NOTE: The use of list_display ensures quick oversight of the most relevant fields
-# IMP: Ensure that the 'document' field in the model is compatible with list_display

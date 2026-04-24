@@ -20,7 +20,10 @@ from rest_framework.views import APIView
 
 # SimpleJWT
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
 
 # Internal
@@ -44,6 +47,7 @@ User = get_user_model()
 # --- AUTHENTICATION & IDENTITY ---
 
 
+# NOTE: Registration view
 class RegisterView(APIView):
     permission_classes = [AllowAny]
 
@@ -67,6 +71,7 @@ class RegisterView(APIView):
         )
 
 
+# NOTE: Login view
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
@@ -76,9 +81,10 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
 
-        # IMP: Trigger login signal for security and audit logging
+        # NOTE: Trigger login signal for security and audit logging
         user_logged_in.send(sender=user.__class__, request=request, user=user)
 
+        # NOTE: Generate JWT tokens for the auth user
         refresh = RefreshToken.for_user(user)
         return Response(
             {
@@ -90,6 +96,7 @@ class LoginView(APIView):
         )
 
 
+# NOTE: Logout view
 class LogoutView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticatedUser]
@@ -127,8 +134,11 @@ class UserSearchView(generics.ListAPIView):
     # NOTE: Configures searchable fields for finding other users to invite
     search_fields = ["username", "email"]
 
+    # Filter users based on role or shared document access
     def get_queryset(self):
-        queryset = UserModel.objects.exclude(id=self.request.user.id).filter(is_active=True)
+        queryset = UserModel.objects.exclude(id=self.request.user.id).filter(
+            is_active=True
+        )
 
         role_name = self.request.query_params.get("role")
         if role_name:
@@ -176,7 +186,7 @@ class UserListDestroyView(generics.ListCreateAPIView):
         if is_staff is not None:
             val = is_staff.lower() == "true"
             queryset = queryset.filter(Q(is_staff=val) | Q(is_superuser=val))
-            
+
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
 
@@ -191,6 +201,7 @@ class UserListDestroyView(generics.ListCreateAPIView):
         return {"request": self.request}
 
 
+# NOTE: Promote user to admin
 class UserAdminToggleView(generics.GenericAPIView):
     queryset = UserModel.objects.all()
     permission_classes = [IsAuthenticatedUser, IsSuperUser]
@@ -201,7 +212,7 @@ class UserAdminToggleView(generics.GenericAPIView):
         requester = request.user
         password = request.data.get("password")
 
-        # Password Verification (Using check_password like your delete view)
+        # Password Verification (Using check_password)
         if not password:
             return Response(
                 {"detail": "Password is required to change admin status."},
@@ -217,7 +228,9 @@ class UserAdminToggleView(generics.GenericAPIView):
         # Safety Check
         if user_to_toggle == requester:
             return Response(
-                {"detail": "You cannot change your own admin status through this endpoint."},
+                {
+                    "detail": "You cannot change your own admin status through this endpoint."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -239,6 +252,7 @@ class UserAdminToggleView(generics.GenericAPIView):
             status=status.HTTP_200_OK,
         )
 
+
 class AdminDeleteUserView(APIView):
     permission_classes = [IsAuthenticated, IsStaffOrSuperUser]
 
@@ -257,7 +271,7 @@ class AdminDeleteUserView(APIView):
         if user_to_delete.is_superuser and not request.user.is_superuser:
             return Response({"error": "Insufficient privileges."}, status=403)
 
-        # Token Blacklisting (outside atomic — failure here should NOT block deletion)
+        # Token Blacklisting
         try:
             tokens = OutstandingToken.objects.filter(user=user_to_delete)
             if tokens.exists():
@@ -267,7 +281,10 @@ class AdminDeleteUserView(APIView):
                 )
         except Exception as e:
             # Non-fatal — user is being deleted anyway, tokens will be orphaned
-            logger.warning(f"Token blacklist step failed for user {id} (non-fatal): {e}", exc_info=True)
+            logger.warning(
+                f"Token blacklist step failed for user {id} (non-fatal): {e}",
+                exc_info=True,
+            )
 
         # Core Deletion
         try:
@@ -286,7 +303,7 @@ class AdminDeleteUserView(APIView):
                 exc_info=True,  # ← this prints the full stack trace to your logs
             )
 
-            # Paradox check — did the deletion actually go through despite the exception?
+            # Paradox check — did the deletion actually go through despite the exception
             try:
                 user_still_exists = UserModel.objects.filter(pk=id).exists()
             except Exception as check_err:
@@ -294,7 +311,9 @@ class AdminDeleteUserView(APIView):
                 user_still_exists = False
 
             if not user_still_exists:
-                logger.warning(f"User {id} was deleted but a post-commit signal raised: {e}")
+                logger.warning(
+                    f"User {id} was deleted but a post-commit signal raised: {e}"
+                )
                 return Response(status=status.HTTP_204_NO_CONTENT)
 
             return Response(
@@ -302,6 +321,8 @@ class AdminDeleteUserView(APIView):
                 status=500,
             )
 
+
+# NOTE: Ban or activate user accounts
 class ToggleUserView(APIView):
     permission_classes = [IsStaffOrSuperUser]
 
@@ -310,7 +331,7 @@ class ToggleUserView(APIView):
         user = get_object_or_404(UserModel, pk=id)
         current_user = request.user
 
-        # SECURITY: Prevents users from deactivating their own accounts
+        # NOTE: Prevents users from deactivating their own accounts
         if user == current_user:
             return Response(
                 {"detail": "You cannot deactivate your own account."},
@@ -433,7 +454,7 @@ class CurrentUserDetailView(APIView):
             request.user.set_password(new_password)
             request.user.save()
 
-            # FIX: Blacklist the refresh token so old sessions die immediately
+            # IMP: Blacklist the refresh token so old sessions die immediately
             try:
                 refresh_token = request.data.get("refresh")
                 if refresh_token:

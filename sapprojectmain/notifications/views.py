@@ -11,10 +11,7 @@ from document_permissions.models import DocumentPermissionModel
 import traceback
 
 
-# ---------------------------------------------------------------------------
 # Custom Pagination with unread counts
-# ---------------------------------------------------------------------------
-
 class NotificationPagination(PageNumberPagination):
     page_size = 50
     page_size_query_param = "page_size"
@@ -36,10 +33,7 @@ class NotificationPagination(PageNumberPagination):
         })
 
 
-# ---------------------------------------------------------------------------
-# Optimized List View
-# ---------------------------------------------------------------------------
-
+# Optimized List View with filtering and search
 class NotificationListView(generics.ListAPIView):
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
@@ -69,10 +63,7 @@ class NotificationListView(generics.ListAPIView):
         return queryset
 
 
-# ---------------------------------------------------------------------------
 # Mark specific notification as read
-# ---------------------------------------------------------------------------
-
 class MarkNotificationReadView(generics.UpdateAPIView):
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
@@ -88,10 +79,7 @@ class MarkNotificationReadView(generics.UpdateAPIView):
         return Response({"status": "read"}, status=status.HTTP_200_OK)
 
 
-# ---------------------------------------------------------------------------
 # Mark all as read
-# ---------------------------------------------------------------------------
-
 class MarkAllReadView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -103,10 +91,7 @@ class MarkAllReadView(APIView):
         return Response({"status": "all marked as read"}, status=status.HTTP_200_OK)
 
 
-# ---------------------------------------------------------------------------
 # Delete notification
-# ---------------------------------------------------------------------------
-
 class NotificationDeleteView(generics.DestroyAPIView):
     permission_classes = [IsAuthenticated]
     lookup_field = "pk"
@@ -115,10 +100,7 @@ class NotificationDeleteView(generics.DestroyAPIView):
         return NotificationModel.objects.filter(recipient=self.request.user)
 
 
-# ---------------------------------------------------------------------------
 # Handle permission/invitation requests  (unchanged)
-# ---------------------------------------------------------------------------
-
 class HandleJoinRequestView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -163,10 +145,7 @@ class HandleJoinRequestView(APIView):
         return Response({"status": req.status})
 
 
-# ---------------------------------------------------------------------------
 # Handle document deletion approval requests  (NEW — mirrors HandleJoinRequestView)
-# ---------------------------------------------------------------------------
-
 class HandleDeletionRequestView(APIView):
     permission_classes = [IsAuthenticated]
 

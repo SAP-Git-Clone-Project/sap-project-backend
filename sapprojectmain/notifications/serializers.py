@@ -14,6 +14,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     target_document_title = serializers.ReadOnlyField(source="target_document.title")
 
     # NOTE: Calculated field for relative time display like "2 mins ago"
+    # Helper methods for format, permission, and deletion details
     created_since = serializers.SerializerMethodField()
     permission = serializers.SerializerMethodField()
     deletion = serializers.SerializerMethodField()

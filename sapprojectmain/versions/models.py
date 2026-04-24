@@ -60,7 +60,7 @@ class VersionsModel(models.Model):
         unique_together = ("document", "version_number")
         ordering = ["-version_number"]
         indexes = [
-            # PERF: Speeds up "active version for document" lookup
+            # Speeds up "active version for document" lookup
             models.Index(fields=["document", "is_active"]),
         ]
 

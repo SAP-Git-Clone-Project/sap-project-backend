@@ -5,6 +5,7 @@ from .models import AuditLogModel
 from .serializers import AuditLogSerializer
 from core.permissions import IsStaffOrSuperUser, IsAuthenticatedUser
 
+# NOTE: Configures pagination for the audit log list endpoint
 class AuditLogPagination(PageNumberPagination):
     page_size = 50
     page_size_query_param = "page_size"

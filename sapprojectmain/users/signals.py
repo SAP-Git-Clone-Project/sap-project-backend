@@ -4,7 +4,7 @@ from django.dispatch import receiver
 from user_roles.models import Role, UserRole
 from .models import UserModel
 
-
+# NOTE: Signal to automatically assign the default "Reader" role to new users upon account creation
 @receiver(post_save, sender=UserModel)
 def assign_default_reader_role(sender, instance, created, **kwargs):
     if not created:

@@ -126,10 +126,10 @@ class VersionSerializer(serializers.ModelSerializer):
         return sorted(get_document_permissions(user, obj.document, version=obj))
 
 
+# NOTE: Show less info in list endpoints for performance
 class VersionSummarySerializer(serializers.ModelSerializer):
     """
-    PERF: Lightweight representation for list endpoints (documents list, review inbox).
-    Avoids large payloads (full `content`) and expensive per-item work (signed URLs).
+    Lightweight representation for list endpoints (documents list, review inbox)
     """
 
     creator_name = serializers.ReadOnlyField(source="created_by.username")
